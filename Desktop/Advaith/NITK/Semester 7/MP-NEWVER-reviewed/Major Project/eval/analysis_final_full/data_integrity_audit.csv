@@ -1,0 +1,4 @@
+check,status,details
+one_point_set_per_distribution_size_replicate,PASS,40 dataset identities checked; each should have one hash across k. Inconsistent identities: 0.
+no_hash_reused_across_dataset_identities,PASS,Independent-size mode: True. Repeated hashes across distinct identities: 0.
+independent_size_mode_declared,PASS,seed_mode values found: independent_sizes.

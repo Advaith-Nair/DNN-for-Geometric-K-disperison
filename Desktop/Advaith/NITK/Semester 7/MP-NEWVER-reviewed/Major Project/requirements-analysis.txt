@@ -1,0 +1,2 @@
+# Optional dependency for generating PNG plots from eval/analyze_results.py
+matplotlib>=3.8

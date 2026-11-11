@@ -1,0 +1,2 @@
+# Optional exact MILP baseline; NumPy and PyTorch remain project dependencies.
+gurobipy>=13.0,<14

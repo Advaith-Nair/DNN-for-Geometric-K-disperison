@@ -1,0 +1,14 @@
+metric,value
+instances_total,120
+dnn_valid_pct,100.0
+proven_reference_count,120
+dnn_exact_match_pct,75.0
+dnn_ratio_mean,0.990770333096263
+dnn_ratio_worst,0.8775530432938003
+dnn_gap_mean_pct,0.9229666903737025
+dnn_bound_gap_mean_pct,0.9229666921505849
+dnn_runtime_mean_s,92.01581012583192
+gurobi_solver_runtime_mean_s,0.19222498933474222
+gurobi_optimal_count,120
+gurobi_status_counts,{'OPTIMAL': 120}
+plots_generated,quality_by_n.png;runtime_by_n.png;optimality_gap_clustered.png;optimality_gap_uniform.png;dnn_optimality_gap_distribution.png
