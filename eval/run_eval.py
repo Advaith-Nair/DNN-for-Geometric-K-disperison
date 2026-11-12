@@ -1,25 +1,18 @@
 """
-Stage 5: evaluation harness.
+Experiment runner.
 
-For every (distribution, n, k, seed) instance it runs:
-  - exact solver   (ground truth, Theorem 1 algorithm)
-  - greedy solver  (fast classical baseline)
-  - dNN pipeline   (geometry -> oracle -> binary search)
+For every combination of distribution, n, k and seed, a point set is
+generated and solved with the dNN method, the greedy heuristic and,
+optionally, the exact solver and Gurobi. One CSV row is written per instance.
 
-and records, per instance:
-  - the radius each method ACHIEVES, measured from the returned witness set
-    itself (its real minimum pairwise distance), not from any number the
-    method claims. This keeps the metric honest.
-  - ratio = achieved / true_optimal
-  - exact_match = the witness reaches the true optimum (within 1e-6 relative)
-  - runtime, binary-search iterations, oracle restarts used
+The value of each method is recomputed from the returned point set (its
+minimum pairwise distance), independently of the value the method reports.
+Each row also records the run configuration (cfg_* columns).
 
-Usage (from inside the eval folder):
-    python run_eval.py                       # small default batch
-    python run_eval.py --ns 15 20 --ks 3 4 5 --seeds 10 --dists uniform clustered
-    python run_eval.py --out results.csv
-    python run_eval.py --with-gurobi --gurobi-time-limit 60 --ns 15 20 --ks 3 4 5
-    python run_eval.py --independent-sizes --ns 30 40 50 60 --ks 6 8 10 --seeds 3
+Examples (from the repository root):
+    python eval/run_eval.py --ns 15 20 --ks 3 4 5 --seeds 10 --dists uniform clustered --with-gurobi
+    python eval/run_eval.py --with-gurobi --skip-exact --independent-sizes \
+        --ns 30 40 50 60 --ks 6 8 10 --seeds 5 --restarts 60 --certify --out eval/final_full.csv
 """
 
 from __future__ import annotations
@@ -35,7 +28,7 @@ from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-for sub in ["", "oracle", "baselines", "search", "binary_search"]:
+for sub in ["", "oracle", "baselines", "binary_search"]:
     p = os.path.join(ROOT, sub) if sub else ROOT
     if os.path.isdir(p) and p not in sys.path:
         sys.path.append(p)
@@ -50,11 +43,12 @@ from gurobi_solver import GurobiConfig, solve_k_dispersion_gurobi
 
 
 def achieved_radius(points, witness) -> float:
-    """Real minimum pairwise distance of a witness set."""
+    """Minimum pairwise distance of a set of point indices."""
     return min(points.dist[i, j] for i, j in itertools.combinations(witness, 2))
 
 
 def witness_is_valid(witness, k, n) -> bool:
+    """Check that a solution has k distinct, in-range point indices."""
     return (
         len(witness) == k
         and len(set(witness)) == k
@@ -63,11 +57,11 @@ def witness_is_valid(witness, k, n) -> bool:
 
 
 def derive_independent_size_seed(dist_name: str, n: int, replicate_seed: int) -> int:
-    """Return a stable seed unique to (distribution, n, replicate).
+    """Return a deterministic seed for (distribution, n, replicate).
 
-    The seed intentionally excludes k, so every k value for the same
-    (distribution, n, replicate) is tested on the exact same point set.
-    It includes n so different sizes do not share nested point prefixes.
+    k is not part of the seed, so all values of k share the same point set.
+    n is part of the seed, so instances of different sizes are generated
+    independently rather than as prefixes of one another.
     """
     payload = f"kdispersion-v1|{dist_name}|{n}|{replicate_seed}".encode("utf-8")
     digest = hashlib.blake2b(payload, digest_size=8).digest()
@@ -75,12 +69,13 @@ def derive_independent_size_seed(dist_name: str, n: int, replicate_seed: int) ->
 
 
 def point_set_fingerprint(points) -> str:
-    """Short stable hash of the generated coordinates for auditability."""
+    """Return a short hash of the coordinates, used to check dataset consistency."""
     coords = points.coords.astype("<f8", copy=False)
     return hashlib.sha256(coords.tobytes(order="C")).hexdigest()[:20]
 
 
 def make_points(dist_name: str, n: int, seed: int):
+    """Generate a uniform or clustered instance (4 clusters, standard deviation 0.08)."""
     if dist_name == "uniform":
         return random_uniform_points(n, dim=2, seed=seed)
     if dist_name == "clustered":
@@ -90,6 +85,7 @@ def make_points(dist_name: str, n: int, seed: int):
 
 def run_instance(dist_name, n, k, seed, search_cfg, gurobi_cfg=None, use_exact=True,
                  replicate_seed=None, seed_mode="nested"):
+    """Solve one instance with every requested method and return a CSV row."""
     points = make_points(dist_name, n, seed)
 
     true_r = None
@@ -100,7 +96,7 @@ def run_instance(dist_name, n, k, seed, search_cfg, gurobi_cfg=None, use_exact=T
         t_exact = time.perf_counter() - t0
         true_r = float(exact.radius)
         if not (true_r > 0):
-            return None  # degenerate instance (e.g. duplicate points); skip
+            return None  # degenerate instance, e.g. duplicate points
 
     t0 = time.perf_counter()
     greedy = greedy_k_dispersion(points, k)
@@ -139,7 +135,7 @@ def run_instance(dist_name, n, k, seed, search_cfg, gurobi_cfg=None, use_exact=T
         "oracle_max_restarts_in_one_call": max(
             (h["restarts_used"] for h in res.history), default=0
         ),
-        # run configuration, so every CSV row is self-describing/reproducible
+        # Run configuration.
         "cfg_search_mode": search_cfg.mode,
         "cfg_target_mode": search_cfg.oracle_cfg.train_cfg.target_mode,
         "cfg_max_steps": search_cfg.oracle_cfg.train_cfg.max_steps,
@@ -184,6 +180,7 @@ def run_instance(dist_name, n, k, seed, search_cfg, gurobi_cfg=None, use_exact=T
 
 
 def summarize(rows):
+    """Print a summary of the results to the console."""
     exact_rows = [r for r in rows if r.get("true_radius") is not None]
     groups = defaultdict(list)
     for r in rows:
@@ -211,7 +208,7 @@ def summarize(rows):
                   f"{sum(r['t_exact'] for r in g)/m:>11.3f}")
 
         m = len(exact_rows)
-        print("\nEXACT-REFERENCE RESULTS over", m, "instances")
+        print("\nComparison with the exact solver over", m, "instances")
         print(f"  dNN    : exact-match {100*sum(r['dnn_exact'] for r in exact_rows)/m:.1f}%   "
               f"worst ratio {min(r['dnn_ratio'] for r in exact_rows):.4f}   "
               f"avg ratio {sum(r['dnn_ratio'] for r in exact_rows)/m:.4f}   "
@@ -220,7 +217,7 @@ def summarize(rows):
               f"worst ratio {min(r['greedy_ratio'] for r in exact_rows):.4f}   "
               f"avg ratio {sum(r['greedy_ratio'] for r in exact_rows)/m:.4f}")
     else:
-        print("\nNo exact recursive reference was requested; reporting feasible radii and Gurobi bounds.")
+        print("\nNo exact solver results; reporting values found and Gurobi bounds.")
         print(f"{'dist':<10}{'n':>4}{'k':>3}{'#':>4} | {'dNN radius':>11}{'Gurobi inc.':>12}{'dNN-bound gap':>15}")
         print("-" * 70)
         for key in sorted(groups):
@@ -243,7 +240,7 @@ def summarize(rows):
         statuses = defaultdict(int)
         for r in gurobi_rows:
             statuses[r["gurobi_status"]] += 1
-        print("\nGUROBI RESULTS over", len(gurobi_rows), "instances")
+        print("\nGurobi results over", len(gurobi_rows), "instances")
         print(f"  feasible incumbents : {len(incumbents)}/{len(gurobi_rows)}")
         print(f"  proven optimal      : {len(optimal)}/{len(gurobi_rows)}")
         print(f"  mean solver runtime : {sum(r['gurobi_runtime'] for r in gurobi_rows)/len(gurobi_rows):.4f}s")
@@ -264,43 +261,43 @@ def summarize(rows):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Run k-dispersion experiments and write a results CSV.")
     ap.add_argument("--ns", type=int, nargs="+", default=[12])
     ap.add_argument("--ks", type=int, nargs="+", default=[3, 4])
     ap.add_argument("--seeds", type=int, default=5, help="number of seeds per config")
     ap.add_argument("--seed-start", type=int, default=0,
-                    help="first seed; use e.g. 100 to test on fresh instances not used for tuning")
+                    help="first replicate seed")
     ap.add_argument("--independent-sizes", action="store_true",
-                    help="derive a distinct point-generation seed for each (distribution, n, replicate); same point set is reused across k")
+                    help="derive a separate point-set seed for each (distribution, n, replicate); "
+                         "the same point set is used for every k")
     ap.add_argument("--dists", nargs="+", default=["uniform"])
     ap.add_argument("--max-steps", type=int, default=400, help="ADAM steps per oracle attempt")
     ap.add_argument("--restarts", type=int, default=15, help="max oracle restarts")
     ap.add_argument("--search-mode", choices=["discrete", "continuous"], default="discrete",
-                    help="discrete = binary search over pairwise distances (default); "
-                         "continuous = old epsilon bisection, for reproducing old CSVs")
+                    help="discrete: search over pairwise distances (default); "
+                         "continuous: bisection on [0, diameter]")
     ap.add_argument("--target-mode", choices=["k", "n", "k2"], default="k",
-                    help="k = base loss f (Eq. 7) with target -k/2; n = same loss with the paper's "
-                         "target -n/2 (find the largest set); k2 = enhanced loss h (Eq. 10), target -k^2/2")
+                    help="k: loss f (Eq. 7), target -k/2; n: loss f, target -n/2; "
+                         "k2: loss h (Eq. 10), target -k^2/2")
     ap.add_argument("--no-local-search", action="store_true",
-                    help="disable the 2-improvement local search (ablation)")
+                    help="disable the 2-improvement local search")
     ap.add_argument("--certify", action="store_true",
-                    help="skip the network when a clique-cover proof shows x is infeasible")
+                    help="use the clique-cover bound to reject infeasible x without running the network")
     ap.add_argument("--with-gurobi", action="store_true",
-                    help="run the direct MILP baseline alongside the existing methods")
+                    help="also solve every instance with the Gurobi MILP")
     ap.add_argument("--gurobi-time-limit", type=float, default=60.0,
                     help="Gurobi time limit in seconds per instance")
     ap.add_argument("--gurobi-mip-gap", type=float, default=0.0,
-                    help="requested relative MIP gap (0 means prove optimality if time permits)")
+                    help="relative MIP gap (0 = solve to proven optimality)")
     ap.add_argument("--gurobi-threads", type=int, default=1,
-                    help="Gurobi thread count; keep fixed across benchmark runs")
+                    help="number of Gurobi threads")
     ap.add_argument("--skip-exact", action="store_true",
-                    help="skip the custom recursive exact solver for medium/large instances")
+                    help="do not run the exact solver (use for n > 20)")
     ap.add_argument("--out", default="results.csv")
     args = ap.parse_args()
 
     if args.skip_exact and not args.with_gurobi:
-        print("NOTE: no exact solver and no Gurobi -> only raw radii are reported "
-              "(useful for large-n head-to-head comparisons between dNN variants).")
+        print("Note: neither the exact solver nor Gurobi is used; only the values found are reported.")
 
     gurobi_cfg = None
     if args.with_gurobi:
@@ -327,7 +324,7 @@ def main():
                                       range(args.seed_start, args.seed_start + args.seeds)))
     for idx, (d, n, k, replicate_seed) in enumerate(configs, 1):
         if k > n or k < 2:
-            continue  # k=1 has no pairwise distance to optimise
+            continue  # k = 1 has no pairwise distance
         seed = (derive_independent_size_seed(d, n, replicate_seed)
                 if args.independent_sizes else replicate_seed)
         row = run_instance(

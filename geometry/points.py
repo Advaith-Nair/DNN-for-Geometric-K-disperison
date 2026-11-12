@@ -1,11 +1,10 @@
 """
-Point generation and pairwise distance caching.
+Point sets and pairwise distances.
 
-Design principle: compute the full pairwise distance matrix ONCE per problem
-instance, then reuse it for every binary-search iteration. Binary search will
-call the conflict-graph builder many times (once per candidate radius x), and
-we never want to recompute point-to-point distances from raw coordinates more
-than once.
+A problem instance is a set of n points in R^d. The full Euclidean distance
+matrix is computed once when the instance is created and is reused by every
+later step (conflict-graph construction, the solvers and the evaluation),
+so coordinates are never processed again after construction.
 """
 
 from __future__ import annotations
@@ -16,28 +15,35 @@ from dataclasses import dataclass
 
 @dataclass
 class PointSet:
-    """A set of n points in R^d, plus their cached pairwise distance matrix."""
+    """A set of n points in R^d together with its pairwise distance matrix.
 
-    coords: np.ndarray          # shape (n, d)
-    dist: np.ndarray            # shape (n, n), symmetric, zero diagonal
+    Attributes:
+        coords: Array of shape (n, d) holding the point coordinates.
+        dist: Array of shape (n, n) holding Euclidean distances. The matrix
+            is symmetric with a zero diagonal.
+    """
+
+    coords: np.ndarray
+    dist: np.ndarray
 
     @property
     def n(self) -> int:
+        """Number of points."""
         return self.coords.shape[0]
 
     @property
     def dim(self) -> int:
+        """Dimension of the ambient space."""
         return self.coords.shape[1]
 
     def diameter(self) -> float:
-        """Largest pairwise distance. Used as the upper bound for binary search."""
+        """Return the largest pairwise distance."""
         return float(self.dist.max())
 
     def min_positive_gap(self) -> float:
-        """
-        Smallest strictly-positive pairwise distance. Useful for setting a
-        meaningful binary-search epsilon (no point resolving x finer than
-        the data itself can distinguish).
+        """Return the smallest strictly positive pairwise distance.
+
+        Returns 0.0 if all points coincide.
         """
         off_diag = self.dist[~np.eye(self.n, dtype=bool)]
         positive = off_diag[off_diag > 0]
@@ -47,16 +53,16 @@ class PointSet:
 
 
 def _pairwise_distances(coords: np.ndarray) -> np.ndarray:
-    """Vectorized Euclidean pairwise distance matrix. O(n^2) space, computed once."""
-    diffs = coords[:, None, :] - coords[None, :, :]   # (n, n, d)
+    """Return the (n, n) Euclidean distance matrix of the given coordinates."""
+    diffs = coords[:, None, :] - coords[None, :, :]
     sq_dists = np.sum(diffs ** 2, axis=-1)
-    # clip tiny negative values from floating point error before sqrt
+    # Guard against small negative values caused by rounding.
     sq_dists = np.clip(sq_dists, 0.0, None)
     return np.sqrt(sq_dists)
 
 
 def make_point_set(coords: np.ndarray) -> PointSet:
-    """Wrap raw coordinates into a PointSet with cached distances."""
+    """Create a PointSet from an (n, d) coordinate array."""
     coords = np.asarray(coords, dtype=float)
     dist = _pairwise_distances(coords)
     return PointSet(coords=coords, dist=dist)
@@ -64,7 +70,14 @@ def make_point_set(coords: np.ndarray) -> PointSet:
 
 def random_uniform_points(n: int, dim: int = 2, low: float = 0.0, high: float = 1.0,
                            seed: int | None = None) -> PointSet:
-    """n points drawn uniformly at random from [low, high]^dim."""
+    """Sample n points uniformly at random from the box [low, high]^dim.
+
+    Args:
+        n: Number of points.
+        dim: Dimension of the space.
+        low, high: Bounds of the sampling box.
+        seed: Seed for the random number generator.
+    """
     rng = np.random.default_rng(seed)
     coords = rng.uniform(low, high, size=(n, dim))
     return make_point_set(coords)
@@ -73,11 +86,19 @@ def random_uniform_points(n: int, dim: int = 2, low: float = 0.0, high: float = 
 def random_clustered_points(n: int, dim: int = 2, n_clusters: int = 5,
                              cluster_std: float = 0.05, low: float = 0.0,
                              high: float = 1.0, seed: int | None = None) -> PointSet:
-    """
-    n points drawn from a mixture of n_clusters Gaussian blobs, cluster centers
-    themselves uniform in [low, high]^dim. Useful for testing non-uniform,
-    harder instances (points bunched together stress-test the conflict graph
-    at small x).
+    """Sample n points from a mixture of isotropic Gaussian clusters.
+
+    Cluster centres are drawn uniformly from [low, high]^dim, each point is
+    assigned to a centre uniformly at random, and the resulting coordinates
+    are clipped to the box.
+
+    Args:
+        n: Number of points.
+        dim: Dimension of the space.
+        n_clusters: Number of Gaussian clusters.
+        cluster_std: Standard deviation of each cluster.
+        low, high: Bounds of the box.
+        seed: Seed for the random number generator.
     """
     rng = np.random.default_rng(seed)
     centers = rng.uniform(low, high, size=(n_clusters, dim))

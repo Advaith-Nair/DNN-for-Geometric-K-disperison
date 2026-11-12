@@ -1,10 +1,12 @@
-"""Analyze k-dispersion experiment CSVs and generate report-ready tables/plots.
+"""
+Summary tables and figures for a results CSV produced by run_eval.py.
 
-The analyzer never treats a time-limited Gurobi incumbent as an optimum:
-- true_radius (custom exact solver) is the reference when available;
-- otherwise gurobi_radius is a reference only when gurobi_optimal == 1;
-- otherwise gurobi_bound is used only to report a conservative DNN/upper-bound
-  ratio and a certified gap-to-bound, not an optimality ratio.
+The reference value of an instance is chosen as follows:
+
+* true_radius (exact solver), when present;
+* otherwise gurobi_radius, but only if Gurobi proved optimality;
+* otherwise no optimum is assumed. If a Gurobi bound is available, only the
+  gap between the dNN value and that upper bound is reported.
 
 Usage from the project root:
     python eval/analyze_results.py --input eval/final_full.csv
@@ -53,6 +55,7 @@ def _flag(value: Any) -> bool | None:
 
 
 def read_results(path: str | Path) -> list[dict[str, Any]]:
+    """Read a results CSV and check that the required columns are present."""
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Input CSV not found: {path}")
@@ -86,6 +89,7 @@ def _reference(row: dict[str, Any]) -> tuple[float | None, str]:
 
 
 def enrich_rows(rows: list[dict[str, Any]], tolerance: float = TOLERANCE) -> list[dict[str, Any]]:
+    """Add the reference value, ratios, gaps and exact-match flags to each row."""
     enriched: list[dict[str, Any]] = []
     for original in rows:
         row = dict(original)
@@ -93,7 +97,7 @@ def enrich_rows(rows: list[dict[str, Any]], tolerance: float = TOLERANCE) -> lis
         dnn_radius = _number(row.get("dnn_radius"))
         dnn_valid = _flag(row.get("dnn_valid"))
         if dnn_valid is None:
-            # Older outputs predate the explicit validity column.
+            # CSVs from earlier versions have no validity column.
             dnn_valid = dnn_radius is not None and dnn_radius > 0
         optimum, source = _reference(row)
         bound = _number(row.get("gurobi_bound"))
@@ -106,8 +110,8 @@ def enrich_rows(rows: list[dict[str, Any]], tolerance: float = TOLERANCE) -> lis
                 dnn_gap_pct = max(0.0, 1.0 - dnn_ratio) * 100.0
                 dnn_match = int(dnn_ratio >= 1.0 - tolerance)
             else:
-                # Invalid/missing witnesses count as non-matches whenever a
-                # proven reference exists, rather than disappearing from the rate.
+                # An invalid or missing solution counts as a miss when a
+                # proven reference exists.
                 dnn_match = 0
 
         dnn_bound_ratio = None
@@ -192,6 +196,7 @@ def _summarize_group(group: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def summarize(enriched: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Aggregate per (distribution, n, k), per distribution and overall."""
     by_nk: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
     by_dist: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in enriched:
@@ -224,8 +229,11 @@ def summarize(enriched: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], lis
 
 
 def audit_point_sets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Audit hashes: same (dist,n,replicate) should reuse points across k;
-    independent-size runs should not reuse a hash across distinct datasets.
+    """Check the point-set fingerprints for consistency.
+
+    Rows with the same (distribution, n, replicate) must share one point set
+    across all k, and in independent-size runs different (distribution, n,
+    replicate) combinations must not share a point set.
     """
     audit: list[dict[str, Any]] = []
     if not any(str(r.get("point_set_hash", "")).strip() for r in rows):
@@ -269,6 +277,7 @@ def audit_point_sets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write rows to CSV, using the union of all keys as the header."""
     if not rows:
         path.write_text("", encoding="utf-8")
         return
@@ -295,6 +304,7 @@ def _fmt(value: Any, digits: int = 4) -> str:
 
 
 def write_markdown_report(path: Path, stats: dict[str, Any], groups: list[dict[str, Any]], audit: list[dict[str, Any]], input_path: Path) -> None:
+    """Write summary.md with the overall table, per-group table and audit."""
     lines = [
         "# k-dispersion experiment analysis",
         "",
@@ -348,9 +358,9 @@ def write_markdown_report(path: Path, stats: dict[str, Any], groups: list[dict[s
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-# Plot styling: plain academic look (serif text, full frame, inward ticks).
-# Colors are color-blind safe and every series also has its own marker,
-# so the figures still read correctly in grayscale print.
+# Figure style: serif text, full frame and inward ticks. The colours are
+# distinguishable under colour-vision deficiency, and each series also has
+# its own marker so that the figures remain readable in greyscale.
 INK = "#000000"
 MUTED = "#4d4d4d"
 GRID = "#d9d9d9"
@@ -408,6 +418,7 @@ def _save(fig, out_dir: Path, stem: str, created: list[str]) -> None:
 
 
 def make_plots(enriched: list[dict[str, Any]], groups: list[dict[str, Any]], out_dir: Path) -> list[str]:
+    """Create all figures in out_dir and return the PNG file names."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -565,6 +576,7 @@ def make_plots(enriched: list[dict[str, Any]], groups: list[dict[str, Any]], out
 
 def analyze(input_path: str | Path, out_dir: str | Path | None = None,
             tolerance: float = TOLERANCE, plots: bool = True) -> Path:
+    """Analyse one results CSV and write all tables and figures."""
     input_path = Path(input_path)
     if out_dir is None:
         out_dir = input_path.parent / f"analysis_{input_path.stem}"

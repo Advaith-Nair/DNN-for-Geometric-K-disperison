@@ -1,12 +1,19 @@
 """
-Binary search over the spacing radius x, using the dNN feasibility oracle
-as the yes/no check at each guess.
+Binary search for the k-dispersion value.
 
-This is Stage 3 of the pipeline: it knows NOTHING about conflict graphs,
-dials, or training -- it just tracks a (lo, hi) range, guesses the
-midpoint, calls the oracle, and reacts to True/False. All of the actual
-solving happens inside the oracle (Stage 2); this loop is deliberately
-simple so it's easy to trust and easy to debug independently of the oracle.
+The optimal value x* is the largest x for which the conflict graph G_x has an
+independent set of size k. Feasibility is monotone in x, so x* can be found
+by binary search, using the feasibility oracle as the decision procedure at
+each step. All problem-specific work is done by the oracle; this module only
+maintains the search interval and the best solution found so far.
+
+Two search modes are provided:
+
+* "discrete" (default): search over the sorted distinct pairwise distances.
+  Since x* is always one of these distances, the result is exact whenever
+  the oracle answers correctly.
+* "continuous": bisection on the interval [0, diameter] up to a tolerance.
+  This mode is kept to reproduce earlier experiments.
 """
 
 from __future__ import annotations
@@ -27,14 +34,20 @@ from feasibility_oracle import OracleConfig, feasibility_oracle
 
 @dataclass
 class SearchConfig:
+    """Parameters of the binary search.
+
+    Attributes:
+        oracle_cfg: Configuration passed to the feasibility oracle.
+        max_iterations: Upper bound on the number of oracle calls.
+        epsilon: Interval tolerance for the continuous mode. If None, a
+            tolerance of 1e-4 times the diameter is used.
+        mode: "discrete" or "continuous" (see module docstring).
+    """
+
     oracle_cfg: OracleConfig = None
-    max_iterations: int = 40     # hard cap, in case epsilon convergence is slow
-    epsilon: float | None = None  # if None, derived from points.diameter() (see below)
-    mode: str = "discrete"       # "discrete": search over the sorted pairwise distances
-                                 # (the optimum is always one of them, so the answer is
-                                 # exact whenever the oracle makes no false negatives).
-                                 # "continuous": the original epsilon-bisection on [0, diameter],
-                                 # kept only so older results can be reproduced.
+    max_iterations: int = 40
+    epsilon: float | None = None
+    mode: str = "discrete"
 
     def __post_init__(self):
         if self.oracle_cfg is None:
@@ -43,15 +56,23 @@ class SearchConfig:
 
 @dataclass
 class SearchResult:
-    best_radius: float           # largest x confirmed feasible
-    best_witness: list[int]      # the k points achieving best_radius
+    """Outcome of a binary search run.
+
+    Attributes:
+        best_radius: Minimum pairwise distance of the best set found.
+        best_witness: Indices of the k selected points.
+        iterations_run: Number of oracle calls made.
+        history: One record per iteration (guess, answer, interval bounds).
+    """
+
+    best_radius: float
+    best_witness: list[int]
     iterations_run: int
-    # diagnostics: one entry per binary-search iteration, useful for
-    # instrumenting where/why things are slow or uncertain later
     history: list[dict] = field(default_factory=list)
 
 
 def _witness_radius(points: PointSet, witness) -> float:
+    """Return the minimum pairwise distance within a set of point indices."""
     w = list(witness)
     if len(w) < 2:
         return float("inf")
@@ -61,22 +82,18 @@ def _witness_radius(points: PointSet, witness) -> float:
 
 def _solve_discrete(points: PointSet, k: int, cfg: SearchConfig,
                     base_seed: int | None) -> SearchResult:
-    """
-    Binary search over the sorted distinct pairwise distances d_0 < ... < d_{m-1}.
+    """Binary search over the sorted distinct pairwise distances.
 
-    The optimal k-dispersion radius is always one of these distances, so
-    searching them directly (a) removes the epsilon-resolution error of
-    continuous bisection and (b) needs only ceil(log2 m) oracle calls.
-
-    Invariant: cands[lo] is known feasible (we hold a witness for it) and
-    every index >= hi is known (or declared) infeasible. When the oracle
-    returns a witness, lo jumps straight to the witness's real radius, which
-    is >= the guessed value -- a free improvement.
+    Invariant: cands[lo] is feasible (a witness is held for it) and every
+    index >= hi has been answered infeasible. When the oracle returns a
+    witness, lo is advanced to the witness's actual minimum distance, which
+    is never smaller than the value queried. The search needs at most
+    ceil(log2(m)) oracle calls for m candidate distances.
     """
     n = points.n
     cands = np.unique(points.dist[np.triu_indices(n, k=1)])
 
-    # Any k points are a valid witness for the smallest distance.
+    # Any k points form a valid solution for the smallest candidate.
     best_witness = list(range(k))
     lo = int(np.searchsorted(cands, _witness_radius(points, best_witness), side="right") - 1)
     hi = len(cands)
@@ -116,33 +133,34 @@ def _solve_discrete(points: PointSet, k: int, cfg: SearchConfig,
 
 def solve_k_dispersion(points: PointSet, k: int, cfg: SearchConfig,
                         base_seed: int | None = None) -> SearchResult:
-    """
-    Binary search over x in [lo, hi] using feasibility_oracle as the check.
+    """Approximately solve k-dispersion by binary search with the oracle.
 
-    lo starts at 0 (trivially feasible: k=1 always works, and for k>1, the
-    oracle will confirm smaller radii are fine too). hi starts at the point
-    set's diameter (the largest possible meaningful spacing).
+    Args:
+        points: The point set.
+        k: Number of points to select (1 <= k <= n).
+        cfg: Search configuration.
+        base_seed: Seed passed to the oracle for reproducibility.
+
+    Returns:
+        The best set found and its minimum pairwise distance. For k = 1 the
+        radius is reported as infinity, since a single point has no pairs.
     """
     if k < 1:
         raise ValueError("k must be >= 1")
     if k > points.n:
         raise ValueError(f"k={k} exceeds number of points n={points.n}")
     if k == 1:
-        # no pairwise distances: any single point is optimal
         return SearchResult(best_radius=float("inf"), best_witness=[0], iterations_run=0)
     if cfg.mode == "discrete":
         return _solve_discrete(points, k, cfg, base_seed)
     if cfg.mode != "continuous":
         raise ValueError(f"unknown search mode: {cfg.mode}")
 
+    # Continuous bisection on [0, diameter]. The tolerance is tied to the
+    # diameter rather than to the smallest pairwise gap, which can be too
+    # coarse and stop the search short of the optimum.
     lo = 0.0
     hi = points.diameter()
-    # FOUND DURING TESTING: min_positive_gap() is often too coarse to use
-    # directly as epsilon -- on the 6-point chain example it produced
-    # epsilon=1.0, causing the search to stop noticeably short of the true
-    # optimum (4.5 vs true 5.0). Use a small fraction of the diameter
-    # instead, which scales sensibly with the actual search range,
-    # independent of how close together any two specific points happen to be.
     epsilon = cfg.epsilon if cfg.epsilon is not None else max(hi * 1e-4, 1e-9)
 
     best_radius = 0.0
@@ -175,9 +193,8 @@ def solve_k_dispersion(points: PointSet, k: int, cfg: SearchConfig,
         iterations += 1
 
     if best_witness is None:
-        # k=1 edge case safeguard: should always be feasible at x=0, but if
-        # somehow no iteration ever ran (e.g. lo==hi already), check once
-        # directly at x=0 rather than returning an empty answer.
+        # No feasible guess was recorded; fall back to x = 0, which is
+        # always feasible.
         g = build_conflict_graph(points, 0.0)
         result = feasibility_oracle(g, k, cfg.oracle_cfg, base_seed=base_seed)
         if result.feasible:

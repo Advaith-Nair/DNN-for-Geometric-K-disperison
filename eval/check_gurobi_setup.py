@@ -1,4 +1,7 @@
-"""Check that gurobipy imports, a license is available, and the MILP solves."""
+"""
+Check the Gurobi installation: import gurobipy, confirm that a licence is
+available and solve a five-point instance to proven optimality.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ try:
     import gurobipy as gp
 except ImportError as exc:
     raise SystemExit(
-        "gurobipy is missing. Run: python -m pip install -r requirements-gurobi.txt"
+        "gurobipy is not installed. Run: python -m pip install -r requirements.txt"
     ) from exc
 
 from geometry.points import make_point_set
@@ -24,6 +27,7 @@ from gurobi_solver import GurobiConfig, solve_k_dispersion_gurobi
 
 
 def main() -> None:
+    """Solve a small test instance and print the solver output."""
     print("Gurobi version:", ".".join(map(str, gp.gurobi.version())))
     points = make_point_set(np.array([
         [0.0, 0.0], [1.0, 0.0], [0.0, 2.0], [3.0, 0.0], [3.0, 4.0]
@@ -39,7 +43,7 @@ def main() -> None:
     print("MIP gap:", result.mip_gap)
     print("Runtime:", result.runtime, "seconds")
     if not result.is_optimal or result.witness is None:
-        raise SystemExit("Gurobi ran, but the smoke-test model was not proven optimal.")
+        raise SystemExit("Gurobi ran, but the test instance was not solved to proven optimality.")
     print("Gurobi installation and license check passed.")
 
 

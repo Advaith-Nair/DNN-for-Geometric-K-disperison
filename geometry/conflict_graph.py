@@ -1,15 +1,11 @@
 """
-Conflict graph construction for the k-dispersion -> MIS reduction.
+Conflict graphs for the decision version of k-dispersion.
 
-Given a PointSet and a candidate spacing radius x, build the graph G_x where
-two points are connected iff their distance is STRICTLY LESS than x (i.e.
-they'd violate the "all pairwise distances >= x" requirement if both were
-selected). An independent set of size k in G_x is exactly a set of k points
-that are pairwise >= x apart.
-
-This module only re-thresholds the cached distance matrix -- it never
-recomputes geometry. That's what makes repeated calls during binary search
-cheap.
+For a threshold x, the conflict graph G_x has one vertex per point and an
+edge between two points whenever their distance is strictly less than x.
+A set of k points with pairwise distance at least x is therefore exactly an
+independent set of size k in G_x. The graph is obtained by thresholding the
+precomputed distance matrix of the PointSet.
 """
 
 from __future__ import annotations
@@ -17,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 
+# Support both package imports and running modules from inside this folder.
 try:
     from .points import PointSet
 except ImportError:
@@ -25,35 +22,46 @@ except ImportError:
 
 @dataclass
 class ConflictGraph:
-    """
-    Conflict graph at a fixed radius x, expressed as both an adjacency matrix
-    and an edge list (both are useful downstream: the dNN oracle wants a
-    compact edge list to build its loss function; repair logic wants fast
-    O(1) adjacency lookups).
+    """Conflict graph G_x for a fixed threshold x.
+
+    The graph is stored both as an adjacency matrix, for constant-time
+    adjacency queries, and as an edge list, which is used to build the
+    loss function of the neural oracle.
+
+    Attributes:
+        n: Number of vertices.
+        x: Distance threshold that defines the edges.
+        adj: Boolean (n, n) adjacency matrix, symmetric with a zero diagonal.
+        edges: List of edges (i, j) with i < j.
     """
 
     n: int
     x: float
-    adj: np.ndarray          # (n, n) boolean, symmetric, zero diagonal
-    edges: list[tuple[int, int]]   # i < j for every edge
+    adj: np.ndarray
+    edges: list[tuple[int, int]]
 
     def degree(self, v: int) -> int:
+        """Return the degree of vertex v."""
         return int(self.adj[v].sum())
 
     def degrees(self) -> np.ndarray:
+        """Return the degree of every vertex."""
         return self.adj.sum(axis=1)
 
     def neighbors(self, v: int) -> np.ndarray:
+        """Return the indices of the neighbours of vertex v."""
         return np.nonzero(self.adj[v])[0]
 
     def has_edge(self, u: int, v: int) -> bool:
+        """Return True if u and v are adjacent."""
         return bool(self.adj[u, v])
 
     def num_edges(self) -> int:
+        """Return the number of edges."""
         return len(self.edges)
 
     def is_independent_set(self, nodes) -> bool:
-        """True iff no two nodes in `nodes` are connected."""
+        """Return True if no two vertices in `nodes` are adjacent."""
         nodes = list(nodes)
         for a_idx in range(len(nodes)):
             for b_idx in range(a_idx + 1, len(nodes)):
@@ -63,17 +71,21 @@ class ConflictGraph:
 
 
 def build_conflict_graph(points: PointSet, x: float) -> ConflictGraph:
-    """
-    Build G_x from the cached distance matrix. Edge (i, j) exists iff
-    dist(i, j) < x. Strict inequality matches the problem definition: a pair
-    at distance exactly x is fine (their spacing constraint is satisfied at
-    exactly the boundary).
+    """Build the conflict graph G_x of a point set.
+
+    Vertices i and j are adjacent if and only if dist(i, j) < x. The
+    inequality is strict, so two points at distance exactly x may both be
+    selected, in line with the constraint "all pairwise distances >= x".
+
+    Args:
+        points: The point set, with precomputed distances.
+        x: Distance threshold.
     """
     n = points.n
     adj = points.dist < x
     np.fill_diagonal(adj, False)
 
-    # upper triangle only, to get each edge once
+    # Read edges from the upper triangle so that each appears once.
     iu, ju = np.triu_indices(n, k=1)
     mask = adj[iu, ju]
     edges = list(zip(iu[mask].tolist(), ju[mask].tolist()))

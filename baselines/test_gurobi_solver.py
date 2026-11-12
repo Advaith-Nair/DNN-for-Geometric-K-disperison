@@ -1,4 +1,8 @@
-"""Tests for the direct Gurobi MILP (skipped when gurobipy is unavailable)."""
+"""
+Tests for the Gurobi MILP model, compared with the exact solver.
+
+The tests are skipped when gurobipy is not installed.
+"""
 
 import importlib.util
 import itertools
@@ -15,10 +19,12 @@ from baselines.gurobi_solver import GurobiConfig, solve_k_dispersion_gurobi
 
 
 def _radius(points, witness):
+    """Minimum pairwise distance of a set of point indices."""
     return min(points.dist[i, j] for i, j in itertools.combinations(witness, 2))
 
 
-def test_gurobi_matches_exact_on_handcrafted_instance():
+def test_gurobi_matches_exact_on_small_instance():
+    """Gurobi proves optimality and matches the exact solver on a five-point instance."""
     points = make_point_set(np.array([
         [0.0, 0.0], [1.0, 0.0], [0.0, 2.0], [3.0, 0.0], [3.0, 4.0]
     ]))
@@ -36,7 +42,8 @@ def test_gurobi_matches_exact_on_handcrafted_instance():
     assert result.radius == pytest.approx(_radius(points, result.witness))
 
 
-def test_gurobi_matches_exact_on_seeded_random_instances():
+def test_gurobi_matches_exact_on_random_instances():
+    """Gurobi matches the exact solver on random instances with n = 9."""
     for seed, k in [(13, 3), (21, 4), (34, 5)]:
         points = random_uniform_points(n=9, dim=2, seed=seed)
         exact = exact_k_dispersion(points, k)

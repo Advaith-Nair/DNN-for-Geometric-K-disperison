@@ -1,23 +1,32 @@
 """
-The dataless neural network (dNN) feasibility oracle core.
+Dataless neural network (dNN) for the independent-set decision problem.
 
-This implements the MIS-reduction penalty function from Alkhouri, Atia &
-Velasquez (2022), adapted for k-dispersion's DECISION question rather than
-their original MAXIMIZATION question.
+Implements the differentiable formulation of the maximum independent set
+problem of Alkhouri, Atia and Velasquez, "A differentiable approach to the
+maximum independent set problem using dataless neural networks", Neural
+Networks 155 (2022). Each vertex v has a parameter theta_v in [0, 1]. The
+base loss (Eq. 7 of the paper) is
 
-We train toward −k/2 instead of the paper’s −n/2 because we only need a set of size k.
+    f(theta) = - sum_v  sigma(theta_v - 1/2)
+               + n * sum_{(u,v) in E}  sigma(theta_u + theta_v - 1),
 
-Base formula (Eq. 7 in the paper), theta in [0,1]^n, one dial per node:
+where sigma is the ReLU. The first term rewards selected vertices and the
+second penalises adjacent pairs that are both selected. An independent set
+of size k corresponds to f = -k/2.
 
-    f(theta) = -sum_v sigma(theta_v - 0.5)  +  n * sum_(u,v) in E  sigma(theta_u + theta_v - 1)
+Differences from the paper:
 
-where sigma = ReLU. First term rewards turning dials on (past 0.5), second
-term punishes any edge where both endpoints are on, weighted by n so it's
-never worth violating an edge to gain one extra node.
+* The optimisation target is -k/2 instead of -n/2, since the decision
+  problem only asks for a set of size k.
+* A leaky ReLU is used during optimisation, with a slope that is annealed
+  towards zero.
+* A term theta * (1 - theta), with a weight that increases during training,
+  pushes the parameters towards 0 or 1.
+* Restarts alternate between degree-based (Eq. 12) and uniform random
+  initialisation (see feasibility_oracle.py).
 
-Enhanced formula (Eq. 10, using the complement graph) is provided as an
-optional alternative loss -- sharper gradient landscape, useful if the base
-version is indecisive near the threshold radius.
+The enhanced loss of the paper (Eq. 10), which also uses the edges of the
+complement graph, is available as target_mode="k2".
 """
 
 from __future__ import annotations
@@ -33,14 +42,13 @@ from geometry.conflict_graph import ConflictGraph
 
 def degree_based_init(g: ConflictGraph, seed: int | None = None,
                        noise_scale: float = 0.05) -> torch.Tensor:
-    """
-    Eq. 12 from the paper: initialize dials HIGH for low-degree nodes (more
-    likely to be in an independent set) and LOW for high-degree nodes, plus
-    a small random perturbation so repeated restarts don't all start
-    identically.
+    """Degree-based initialisation (Eq. 12 of the paper).
 
-        theta_v = 1 - degree(v)/max_degree + s,   s ~ Uniform(0, noise_scale)
-        theta <- theta / max(theta)               (renormalize into [0,1])
+    Low-degree vertices start with large values and high-degree vertices
+    with small values. Uniform noise in [0, noise_scale] is added so that
+    restarts differ, and the result is rescaled to [0, 1]:
+
+        theta_v = 1 - deg(v) / max_deg + s_v,   theta <- theta / max(theta).
     """
     rng = np.random.default_rng(seed)
     degrees = g.degrees()
@@ -48,7 +56,7 @@ def degree_based_init(g: ConflictGraph, seed: int | None = None,
 
     s = rng.uniform(0.0, noise_scale, size=g.n)
     theta = 1.0 - (degrees / max_deg) + s
-    theta = np.clip(theta, 1e-6, None)   # keep strictly positive before renorm
+    theta = np.clip(theta, 1e-6, None)
     theta = theta / theta.max()
     theta = np.clip(theta, 0.0, 1.0)
 
@@ -56,23 +64,14 @@ def degree_based_init(g: ConflictGraph, seed: int | None = None,
 
 
 def random_uniform_init(g: ConflictGraph, seed: int | None = None) -> torch.Tensor:
-    """
-    Plain uniform-random dial init over [0,1], as an alternative to
-    degree_based_init. FINDING FROM TESTING: degree-based init alone is
-    prone to converging to a small-but-valid local optimum (it consistently
-    settles on the same low-degree nodes every restart, since the init
-    itself is deterministic modulo tiny noise). Mixing in fully random
-    inits across restart attempts gives much more diverse starting points
-    and meaningfully raises the chance of finding a genuine size-k
-    independent set near the hardest (threshold) instances.
-    """
+    """Initialise every parameter uniformly at random in [0, 1]."""
     rng = np.random.default_rng(seed)
     theta = rng.uniform(0.0, 1.0, size=g.n)
     return torch.tensor(theta, dtype=torch.float32, requires_grad=True)
 
 
 def _edges_as_tensors(g: ConflictGraph, device=None):
-    """Split edge list into two index tensors for vectorized gather ops."""
+    """Return the edge endpoints as two index tensors."""
     if len(g.edges) == 0:
         u = torch.empty(0, dtype=torch.long, device=device)
         v = torch.empty(0, dtype=torch.long, device=device)
@@ -84,34 +83,18 @@ def _edges_as_tensors(g: ConflictGraph, device=None):
 
 
 def _soft_relu(x: torch.Tensor, leak: float = 0.05) -> torch.Tensor:
-    """
-    A leaky-ReLU used IN PLACE OF the paper's exact ReLU during training.
+    """Leaky ReLU, used in place of the ReLU of the paper.
 
-    BUG FOUND DURING TESTING: torch.relu(x) has EXACTLY ZERO gradient for
-    x < 0. Since the reward term is relu(theta_v - 0.5), any dial that
-    starts below 0.5 (which, empirically, is MOST dials under degree-based
-    init -- see Eq. 12) receives zero gradient from the reward term and can
-    never rise, unless the edge-penalty term happens to push it (which has
-    the same dead-zone problem). This produces exactly the underconvergence
-    symptom: optimization plateaus early and never reaches the target.
-
-    Fix: use a small positive slope below the threshold so every dial keeps
-    *some* gradient pressure toward 1, regardless of where it started. This
-    does not change where the TRUE minimum sits at convergence (leak is
-    small), it only fixes the ability to actually reach that minimum via
-    gradient descent.
+    With a plain ReLU, a parameter below 1/2 receives no gradient from the
+    reward term and cannot increase. The small slope for negative inputs
+    keeps a gradient on every parameter.
     """
     return torch.where(x > 0, x, leak * x)
 
 
 def base_penalty(theta: torch.Tensor, g: ConflictGraph, u_idx: torch.Tensor,
                   v_idx: torch.Tensor, leak: float = 0.05) -> torch.Tensor:
-    """
-    f(theta), Eq. 7. Base MIS penalty using only G's own edges.
-
-    Uses a leaky-ReLU (see _soft_relu) instead of the paper's exact ReLU
-    during optimization, to avoid the dead-gradient trap described above.
-    """
+    """Base loss f(theta) (Eq. 7 of the paper), with a leaky ReLU."""
     n = g.n
     reward = -torch.sum(_soft_relu(theta - 0.5, leak=leak))
     if u_idx.numel() > 0:
@@ -125,14 +108,12 @@ def base_penalty(theta: torch.Tensor, g: ConflictGraph, u_idx: torch.Tensor,
 def enhanced_penalty(theta: torch.Tensor, g: ConflictGraph, u_idx: torch.Tensor,
                       v_idx: torch.Tensor, comp_u_idx: torch.Tensor,
                       comp_v_idx: torch.Tensor, leak: float = 0.05) -> torch.Tensor:
-    """
-    h(theta), Eq. 10. Adds a second penalty term over the COMPLEMENT graph's
-    edges (pairs that are NOT connected in G). Sharper landscape: minimum
-    value scales as -k^2/2 instead of -k/2 (Theorem 4.2). Use this if the
-    base penalty is indecisive near the threshold radius.
+    """Enhanced loss h(theta) (Eq. 10 of the paper).
 
-    NOTE: complement graph has O(n^2) edges for sparse G, so this is more
-    expensive -- only worth it if base_penalty is actually struggling.
+    Adds a reward for every pair of non-adjacent vertices that are both
+    selected, so that an independent set of size k has value -k^2/2
+    (Theorem 4.2 of the paper). The complement graph can have O(n^2)
+    edges, which makes this loss more expensive than f.
     """
     f_val = base_penalty(theta, g, u_idx, v_idx, leak=leak)
     if comp_u_idx.numel() > 0:
@@ -144,7 +125,7 @@ def enhanced_penalty(theta: torch.Tensor, g: ConflictGraph, u_idx: torch.Tensor,
 
 
 def _complement_edges_as_tensors(g: ConflictGraph, device=None):
-    """Build edge-index tensors for the complement graph (non-edges of G)."""
+    """Return the edges of the complement graph as two index tensors."""
     n = g.n
     iu, ju = np.triu_indices(n, k=1)
     is_edge = g.adj[iu, ju]
@@ -156,48 +137,66 @@ def _complement_edges_as_tensors(g: ConflictGraph, device=None):
 
 @dataclass
 class TrainConfig:
-    target_mode: str = "k"       # "k" -> base penalty, target -k/2
-                                   # "k2" -> enhanced penalty, target -k^2/2
-    lr: float = 0.1                # matches paper's ADAM initial LR
+    """Optimisation settings for one run of the dNN.
+
+    Attributes:
+        target_mode: "k" (loss f, target -k/2), "n" (loss f, target -n/2,
+            as in the paper) or "k2" (loss h, target -k^2/2).
+        lr: Adam learning rate.
+        max_steps: Maximum number of Adam steps.
+        convergence_tol: Stop when |loss value - target| is below this.
+        device: Torch device.
+        leak_start, leak_end: Slope of the leaky ReLU at the first and last
+            step; the slope is interpolated linearly in between.
+        binarize_gamma_max: Final weight of the term sum theta * (1 - theta),
+            which increases linearly from 0.
+    """
+
+    target_mode: str = "k"
+    lr: float = 0.1
     max_steps: int = 500
-    convergence_tol: float = 1e-3   # stop early if loss below this
+    convergence_tol: float = 1e-3
     device: str = "cpu"
-    leak_start: float = 0.15       # leaky-relu slope at step 0 (escape dead gradients)
-    leak_end: float = 0.01         # leaky-relu slope at final step (near-exact ReLU,
-                                     # so the loss value genuinely reflects a near-binary
-                                     # theta and can't be gamed by half-on dials)
-    binarize_gamma_max: float = 2.0  # FINDING FROM TESTING: without this, the optimizer
-                                     # can hit the target loss value using "phantom"
-                                     # fractional dials (many small values near 0 that sum
-                                     # up via the leak) instead of a genuine near-binary
-                                     # solution. This term, theta*(1-theta), is zero at
-                                     # theta=0 or 1 and positive in between -- explicitly
-                                     # pushing dials toward true binary states. Ramped
-                                     # from 0 -> binarize_gamma_max across training so
-                                     # early steps can still explore freely.
+    leak_start: float = 0.15
+    leak_end: float = 0.01
+    binarize_gamma_max: float = 2.0
 
 
 @dataclass
 class TrainResult:
+    """Outcome of one optimisation run.
+
+    Attributes:
+        theta: Final parameters.
+        final_penalty_value: Loss value at the last step.
+        target: Target value used.
+        steps_run: Number of Adam steps performed.
+        converged: Whether the target was reached within the tolerance.
+    """
+
     theta: torch.Tensor
     final_penalty_value: float
     target: float
     steps_run: int
-    converged: bool   # True if final_penalty_value reached target within tol
+    converged: bool
 
 
 def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
                  init_theta: torch.Tensor | None = None,
                  seed: int | None = None,
                  init_strategy: str = "degree") -> TrainResult:
-    """
-    Run ADAM to push theta toward the target value that corresponds to
-    "an independent set of size k exists" (THIS IS FIX #1: target is a
-    function of k, not n).
+    """Optimise theta with Adam for the decision question "is alpha(G) >= k?".
 
-    init_strategy: "degree" uses Eq. 12 (degree-based + small noise),
-    "random" uses plain uniform random init. See random_uniform_init's
-    docstring for why alternating strategies across restarts matters.
+    The objective is (loss(theta) - target)^2 + gamma * sum theta(1 - theta),
+    and theta is projected onto [0, 1] after every step.
+
+    Args:
+        g: Conflict graph.
+        k: Required independent-set size.
+        cfg: Optimisation settings.
+        init_theta: Optional initial parameters; overrides init_strategy.
+        seed: Seed for the initialisation.
+        init_strategy: "degree" (Eq. 12) or "random".
     """
     device = torch.device(cfg.device)
 
@@ -214,8 +213,6 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
         target = -float(k) / 2.0
         loss_fn = lambda th, leak: base_penalty(th, g, u_idx, v_idx, leak=leak)
     elif cfg.target_mode == "n":
-        # paper's original choice (Sec. 4.1): aim for the LARGEST independent
-        # set (f_d = -n/2); the oracle then just checks whether it has >= k nodes
         target = -float(g.n) / 2.0
         loss_fn = lambda th, leak: base_penalty(th, g, u_idx, v_idx, leak=leak)
     elif cfg.target_mode == "k2":
@@ -230,12 +227,8 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
     final_val = None
     steps_run = 0
     for step in range(cfg.max_steps):
-        # anneal leak linearly from leak_start -> leak_end across training.
-        # Early steps: strong leak, so dials below 0.5 still get gradient
-        # signal and can escape the dead zone. Late steps: leak -> ~0, so
-        # the loss value can no longer be satisfied by "phantom" partial
-        # activations -- it has to correspond to a genuinely near-binary
-        # theta, restoring the theorem's exact correspondence in practice.
+        # Linear schedules: the leak decreases and the binarisation weight
+        # increases over the course of training.
         frac = step / max(cfg.max_steps - 1, 1)
         leak = cfg.leak_start + frac * (cfg.leak_end - cfg.leak_start)
         gamma = cfg.binarize_gamma_max * frac
@@ -248,7 +241,7 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
         optimizer.step()
 
         with torch.no_grad():
-            theta.clamp_(0.0, 1.0)   # keep dials in [0,1] (box constraint)
+            theta.clamp_(0.0, 1.0)
 
         final_val = val.item()
         steps_run = step + 1
@@ -257,8 +250,8 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
             break
 
     if cfg.target_mode == "n":
-        # -n/2 is only reachable on an edgeless graph, so "converged" means
-        # "reached the -k/2 level needed for a size-k set"
+        # -n/2 is reachable only on an edgeless graph; treat reaching the
+        # value of a size-k set as convergence.
         converged = final_val is not None and final_val <= -float(k) / 2.0 + cfg.convergence_tol
     else:
         converged = final_val is not None and abs(final_val - target) < cfg.convergence_tol
@@ -272,6 +265,6 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
 
 
 def extract_set(theta: torch.Tensor, alpha: float = 0.5) -> list[int]:
-    """Eq. 4: threshold dials >= alpha into a candidate node set."""
+    """Return the vertices with theta_v >= alpha (Eq. 4 of the paper)."""
     theta_np = theta.detach().cpu().numpy()
     return [i for i, val in enumerate(theta_np) if val >= alpha]

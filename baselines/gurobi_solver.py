@@ -1,7 +1,8 @@
-"""Direct MILP formulation of the Euclidean k-dispersion problem.
+"""
+Mixed-integer linear programming (MILP) model for k-dispersion, solved with Gurobi.
 
-Given pairwise distances d[i,j], choose exactly k points and maximize the
-minimum distance between any selected pair:
+Given pairwise distances d[i,j], choose exactly k points and maximise the
+minimum distance between any two selected points:
 
     maximize    r
     subject to  sum_i y[i] = k
@@ -9,13 +10,10 @@ minimum distance between any selected pair:
                 0 <= r <= diameter
                 y[i] in {0, 1}
 
-Here y[i] indicates whether point i is selected.  We use the tight valid
-coefficient M[i,j] = diameter - d[i,j].  If both endpoints are selected,
-the constraint reduces to r <= d[i,j].  Otherwise its right-hand side is
-at least the diameter, so it is inactive because r is bounded by diameter.
-
-This model is independent of the dNN/conflict-graph pipeline and therefore
-serves as a direct mathematical-programming comparison baseline.
+Here y[i] indicates whether point i is selected and M[i,j] = diameter - d[i,j].
+If both endpoints are selected, the constraint reduces to r <= d[i,j];
+otherwise its right-hand side is at least the diameter and the constraint is
+inactive. The model has n + 1 variables and n(n-1)/2 + 1 constraints.
 """
 
 from __future__ import annotations
@@ -29,13 +27,21 @@ import numpy as np
 
 try:
     from geometry.points import PointSet
-except ImportError:  # allow running from a module's own directory
+except ImportError:  # running from inside the baselines folder
     from points import PointSet
 
 
 @dataclass
 class GurobiConfig:
-    """Gurobi solver settings used in the benchmark."""
+    """Gurobi parameters.
+
+    Attributes:
+        time_limit: Time limit in seconds.
+        mip_gap: Relative optimality gap at which the solver stops.
+        threads: Number of solver threads.
+        output_flag: 1 to print the Gurobi log, 0 to suppress it.
+        seed: Gurobi random seed.
+    """
 
     time_limit: float = 60.0
     mip_gap: float = 0.0
@@ -54,7 +60,13 @@ class GurobiConfig:
 
 @dataclass
 class GurobiResult:
-    """Solver output plus independently measured witness quality."""
+    """Result of a Gurobi run.
+
+    ``radius`` is the minimum pairwise distance of the returned point set,
+    computed from the distance matrix. The remaining fields are taken from
+    the solver (status, objective value and bound, gap, node count, model
+    size and timings).
+    """
 
     radius: float | None
     witness: tuple[int, ...] | None
@@ -72,7 +84,7 @@ class GurobiResult:
 
 
 def _load_gurobi():
-    """Import Gurobi lazily so the rest of the project works without it."""
+    """Import gurobipy on first use, so that the rest of the code does not require it."""
     try:
         import gurobipy as gp
         from gurobipy import GRB
@@ -85,7 +97,7 @@ def _load_gurobi():
 
 
 def gurobi_available() -> bool:
-    """Return whether gurobipy can be imported (does not test the license)."""
+    """Return True if gurobipy can be imported. The licence is not checked."""
     try:
         import gurobipy  # noqa: F401
         return True
@@ -94,6 +106,7 @@ def gurobi_available() -> bool:
 
 
 def _status_name(status: int, GRB: Any) -> str:
+    """Return the name of a Gurobi status code, e.g. "OPTIMAL"."""
     names = [
         "LOADED", "OPTIMAL", "INFEASIBLE", "INF_OR_UNBD", "UNBOUNDED",
         "CUTOFF", "ITERATION_LIMIT", "NODE_LIMIT", "TIME_LIMIT",
@@ -112,12 +125,15 @@ def solve_k_dispersion_gurobi(
     k: int,
     cfg: GurobiConfig | None = None,
 ) -> GurobiResult:
-    """Solve max-min k-dispersion with a direct Gurobi MILP.
+    """Solve k-dispersion with the MILP model.
 
-    A feasible incumbent is returned even when the time limit is reached.
-    ``radius`` is recomputed from the extracted point set rather than copied
-    from Gurobi's objective, so the reported solution quality is independent
-    of the solver's floating-point objective value.
+    If the time limit is reached, the best feasible solution found so far
+    is returned and ``is_optimal`` is False.
+
+    Args:
+        points: The point set.
+        k: Number of points to select (k >= 2).
+        cfg: Solver parameters; defaults are used if None.
     """
     if cfg is None:
         cfg = GurobiConfig()
@@ -146,9 +162,8 @@ def solve_k_dispersion_gurobi(
         model.addConstr(gp.quicksum(selected[i] for i in range(n)) == k,
                         name="choose_exactly_k")
 
-        # A pair only constrains the radius when BOTH endpoints are selected.
-        # M_ij = diameter - d_ij is sufficient and tighter than a single
-        # global big-M constant because radius is bounded above by diameter.
+        # The pair (i, j) bounds the radius only when both points are selected.
+        # M_ij = diameter - d_ij is the smallest valid big-M coefficient.
         for i in range(n):
             for j in range(i + 1, n):
                 dij = float(dist[i, j])

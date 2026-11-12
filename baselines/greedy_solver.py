@@ -1,22 +1,11 @@
 """
-Greedy farthest-point k-dispersion heuristic, as described in Ravi,
-Rosenkrantz & Tayi (1994) and referenced in the k-dispersion paper's
-"Related work" section. Proven 1/2-approximation ratio for points
-satisfying the triangle inequality (true here, since we use Euclidean
-distance).
+Greedy farthest-point heuristic for k-dispersion.
 
-This is the PRACTICAL fast baseline for your evaluation -- unlike the
-paper's "Algorithm B" (0.99-approximation), which only applies for
-k >= 3*10^5 by its own stated constraint, this greedy method works at any
-n, k and runs in O(n*k) time, making it the realistic speed/quality
-comparison point at the scales you'll actually test.
-
-Algorithm:
-    1. Start with the diameter pair (the two farthest-apart points).
-    2. Repeatedly add the point whose distance to its CLOSEST currently-
-       selected point is largest (i.e. the point that is "most isolated"
-       from what's already chosen).
-    3. Stop once k points are selected.
+The heuristic of Ravi, Rosenkrantz and Tayi (1994) starts from a diameter
+pair and repeatedly adds the point whose distance to the nearest selected
+point is largest, until k points are selected. For distances that satisfy
+the triangle inequality it is a 1/2-approximation. It runs in O(nk) time
+and is deterministic for a given point set.
 """
 
 from __future__ import annotations
@@ -32,14 +21,18 @@ from geometry.points import PointSet
 
 @dataclass
 class GreedyResult:
-    radius: float             # the achieved minimum pairwise distance
+    """Minimum pairwise distance of the selected set and the selected indices."""
+
+    radius: float
     witness: tuple[int, ...]
 
 
 def greedy_k_dispersion(points: PointSet, k: int) -> GreedyResult:
-    """
-    O(n*k) greedy farthest-point selection. Fast, no training, no
-    randomness -- deterministic given the point set.
+    """Select k points with the farthest-point heuristic.
+
+    Args:
+        points: The point set.
+        k: Number of points to select.
     """
     n = points.n
     if k > n:
@@ -47,7 +40,7 @@ def greedy_k_dispersion(points: PointSet, k: int) -> GreedyResult:
     if k == 1:
         return GreedyResult(radius=float("inf"), witness=(0,))
 
-    # Step 1: diameter pair
+    # Start from a diameter pair.
     dist = points.dist
     i_idx, j_idx = np.unravel_index(np.argmax(dist), dist.shape)
     selected = [int(i_idx), int(j_idx)]
@@ -55,18 +48,15 @@ def greedy_k_dispersion(points: PointSet, k: int) -> GreedyResult:
     if k == 2:
         return GreedyResult(radius=float(dist[i_idx, j_idx]), witness=tuple(selected))
 
-    # Step 2: repeatedly add the point maximizing distance-to-nearest-selected
+    # Distance from each unselected point to its nearest selected point.
     remaining = set(range(n)) - set(selected)
-    # track, for each remaining point, its distance to the nearest selected point
     min_dist_to_selected = {p: min(dist[p, s] for s in selected) for p in remaining}
 
     while len(selected) < k:
-        # pick the remaining point that is farthest from its nearest selected neighbor
         best_p = max(remaining, key=lambda p: min_dist_to_selected[p])
         selected.append(best_p)
         remaining.remove(best_p)
 
-        # update nearest-distance tracking for all still-remaining points
         for p in remaining:
             d = dist[p, best_p]
             if d < min_dist_to_selected[p]:

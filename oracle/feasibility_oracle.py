@@ -1,14 +1,13 @@
 """
-The complete feasibility oracle: given a conflict graph and k, answer
-"does an independent set of size >= k exist?" -- using the dNN.
+Feasibility oracle: decide whether a conflict graph has an independent set
+of size at least k.
 
-This wraps together:
-  - dial training (target = -k/2, fix #1)
-  - extraction (threshold at alpha)
-  - repair (swap-before-delete, fix #2)
-  - multi-restart (perturbed re-init on failure, before declaring infeasible)
-
-This is the function binary search will call at every guessed radius x.
+Each attempt optimises the dNN parameters, rounds them to a vertex set and
+post-processes the set (conflict repair, greedy augmentation and, optionally,
+2-improvement local search). If no attempt produces a set of size k within
+the restart budget, the instance is reported infeasible. The answer
+"feasible" is always backed by a verified independent set; the answer
+"infeasible" may be wrong unless it comes from the clique-cover certificate.
 """
 
 from __future__ import annotations
@@ -26,16 +25,23 @@ from certificates import certified_infeasible
 
 @dataclass
 class OracleConfig:
+    """Settings of the feasibility oracle.
+
+    Attributes:
+        train_cfg: Optimisation settings for each attempt.
+        alpha: Rounding threshold for theta.
+        use_certificate: If True, first check the clique-cover bound and
+            report infeasibility without running the network when the bound
+            is below k.
+        local_search: Apply 2-improvement local search after repair.
+        max_restarts: Maximum number of attempts.
+    """
+
     train_cfg: TrainConfig = None
     alpha: float = 0.5
-    use_certificate: bool = False   # if True, first try a cheap PROOF that no size-k
-                                    # independent set exists (clique cover bound) and skip
-                                    # the network entirely when it succeeds. Only ever
-                                    # certifies "infeasible", so it cannot cause wrong answers.
-    local_search: bool = True   # 2-improvement local search after repair (paper Sec. 5.1)
-    max_restarts: int = 15   # raised from 5: near-threshold instances (where the
-                              # answer is exactly k, the hardest case) empirically
-                              # needed more attempts, especially mixed with random init
+    use_certificate: bool = False
+    local_search: bool = True
+    max_restarts: int = 15
 
     def __post_init__(self):
         if self.train_cfg is None:
@@ -44,10 +50,22 @@ class OracleConfig:
 
 @dataclass
 class OracleResult:
+    """Answer of the oracle, with per-attempt diagnostics.
+
+    Attributes:
+        feasible: Whether an independent set of size k was found.
+        witness: The k vertices found, or None.
+        restarts_used: Number of attempts made.
+        per_attempt_final_value: Final loss value of each attempt.
+        per_attempt_target: Target value of the loss.
+        per_attempt_converged: Whether each attempt reached the target.
+        per_attempt_extracted_size: Size of the rounded set in each attempt.
+        per_attempt_repaired_size: Size after post-processing in each attempt.
+    """
+
     feasible: bool
-    witness: list[int] | None       # k nodes, pairwise conflict-free, if feasible
+    witness: list[int] | None
     restarts_used: int
-    # diagnostics -- useful for instrumenting WHY a call failed (Week 3 tuning)
     per_attempt_final_value: list[float]
     per_attempt_target: float
     per_attempt_converged: list[bool]
@@ -57,13 +75,17 @@ class OracleResult:
 
 def feasibility_oracle(g: ConflictGraph, k: int, cfg: OracleConfig,
                         base_seed: int | None = None) -> OracleResult:
-    """
-    Answer: does G have an independent set of size >= k?
+    """Decide whether g has an independent set of size at least k.
 
-    Tries up to cfg.max_restarts times, perturbing the dial initialization
-    each time, before giving up and declaring infeasible. This is fix #1's
-    companion: a single non-convergent run near a hard threshold radius is
-    not reliable evidence of true infeasibility.
+    Attempt i uses seed base_seed + i. Even-numbered attempts use the
+    degree-based initialisation and odd-numbered attempts a uniform random
+    one, so that the restarts start from different regions of [0, 1]^n.
+
+    Args:
+        g: Conflict graph.
+        k: Required set size.
+        cfg: Oracle settings.
+        base_seed: Base seed for the attempts; None for unseeded runs.
     """
     if cfg.use_certificate and certified_infeasible(g.adj, k):
         return OracleResult(
@@ -81,13 +103,6 @@ def feasibility_oracle(g: ConflictGraph, k: int, cfg: OracleConfig,
 
     for attempt in range(cfg.max_restarts):
         seed = None if base_seed is None else base_seed + attempt
-
-        # ALTERNATE init strategies across restarts: degree-based init is a
-        # good prior but is nearly deterministic (tiny noise only), so it
-        # tends to converge to the SAME local optimum every attempt. Mixing
-        # in fully random inits gives real diversity across restarts and
-        # empirically finds larger independent sets that degree-based init
-        # alone misses. Even-numbered attempts: degree-based. Odd: random.
         init_strategy = "degree" if attempt % 2 == 0 else "random"
 
         result = train_dials(g, k, cfg.train_cfg, seed=seed, init_strategy=init_strategy)
@@ -103,8 +118,7 @@ def feasibility_oracle(g: ConflictGraph, k: int, cfg: OracleConfig,
         per_attempt_repaired_size.append(len(repaired))
 
         if len(repaired) >= k:
-            # trim to exactly k -- any subset of a conflict-free set is
-            # still conflict-free
+            # Any k vertices of an independent set are independent.
             witness = repaired[:k]
             return OracleResult(
                 feasible=True,

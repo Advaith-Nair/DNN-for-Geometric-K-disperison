@@ -1,22 +1,27 @@
 """
-Cheap, network-free certificates that an independent set of size k CANNOT exist.
+Clique-cover upper bound on the independence number.
 
-Idea: if the vertices can be covered by c cliques, an independent set can
-contain at most one vertex per clique, so alpha(G) <= c. If c < k, then
-"no independent set of size k" is PROVEN, and the dNN never needs to run.
-
-This only ever certifies "infeasible" (it never claims "feasible"), and is
-a valid upper bound, so it cannot introduce wrong answers.
+If the vertices of a graph are partitioned into c cliques, an independent set
+contains at most one vertex from each clique, so alpha(G) <= c. When a greedy
+clique cover has fewer than k cliques, the graph has no independent set of
+size k and the neural oracle does not need to be run. The bound can only
+prove infeasibility; it never reports a feasible instance as infeasible.
 """
+
 from __future__ import annotations
+
 import numpy as np
 
 
 def greedy_clique_cover_bound(adj: np.ndarray) -> int:
-    """Number of cliques in a greedy clique cover = an upper bound on alpha(G)."""
+    """Return the number of cliques in a greedy clique cover.
+
+    Vertices are processed in order of increasing degree. Each unassigned
+    vertex starts a new clique, which is extended greedily by unassigned
+    vertices adjacent to all of its members.
+    """
     n = adj.shape[0]
     unassigned = np.ones(n, dtype=bool)
-    # process low-degree vertices first (they have the fewest clique options)
     order = np.argsort(adj.sum(axis=1))
     cliques = 0
     for v in order:
@@ -24,7 +29,7 @@ def greedy_clique_cover_bound(adj: np.ndarray) -> int:
             continue
         clique = [int(v)]
         unassigned[v] = False
-        # candidates: unassigned vertices adjacent to every member so far
+        # Unassigned vertices adjacent to every member of the clique.
         cand = unassigned & adj[v]
         while cand.any():
             u = int(np.flatnonzero(cand)[0])
@@ -36,5 +41,5 @@ def greedy_clique_cover_bound(adj: np.ndarray) -> int:
 
 
 def certified_infeasible(adj: np.ndarray, k: int) -> bool:
-    """True only if it is PROVEN that no independent set of size k exists."""
+    """Return True if the clique-cover bound shows that alpha(G) < k."""
     return greedy_clique_cover_bound(adj) < k

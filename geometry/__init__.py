@@ -1,3 +1,5 @@
+"""Point sets and conflict graphs for geometric k-dispersion."""
+
 from .points import PointSet, make_point_set, random_uniform_points, random_clustered_points
 from .conflict_graph import ConflictGraph, build_conflict_graph
 

@@ -1,11 +1,14 @@
 """
-Compare several run_eval.py CSVs that were run on the SAME instances
-(same --ns/--ks/--seeds/--seed-start/--dists/--independent-sizes), e.g. the
-full pipeline vs. the ablations.
+Compare several results CSVs that were produced on the same instances
+(same --ns, --ks, --seeds, --seed-start, --dists and --independent-sizes),
+for example the full method and its ablations.
 
-Reference radius per instance = exact solver radius if present, otherwise
-Gurobi's radius when Gurobi proved optimality, otherwise the best radius any
-compared run found (then "exact %" means "matched the best known").
+The reference value of an instance is the exact solver value if present,
+otherwise the Gurobi value if Gurobi proved optimality, and otherwise the
+best value found by any of the compared runs. In the last case the "exact %"
+column is the share of instances on which a run matched the best value found.
+For every pair of runs, the number of instances on which one run found a
+strictly better value than the other is also reported.
 
 Usage (from the project root):
     python eval/compare_runs.py full=eval/final_full.csv no_ls=eval/final_no_ls.csv \
@@ -17,10 +20,12 @@ import sys
 
 
 def key(r):
+    """Identify an instance by distribution, n, k and replicate seed."""
     return (r["dist"], r["n"], r["k"], r.get("replicate_seed") or r["seed"])
 
 
 def reference(r):
+    """Return the proven optimum of a row and its source, if available."""
     if r.get("true_radius"):
         return float(r["true_radius"]), "exact"
     if r.get("gurobi_optimal") == "1" and r.get("gurobi_radius"):
@@ -36,7 +41,7 @@ def main(argv):
 
     common = set.intersection(*(set(v) for v in runs.values()))
     if not common:
-        sys.exit("no common instances -- were the runs made with the same settings?")
+        sys.exit("The CSV files have no instances in common.")
 
     ref = {}
     ref_kind = {}
@@ -65,7 +70,7 @@ def main(argv):
 
     labels = list(runs)
     if len(labels) >= 2:
-        print("\nHead-to-head (row beats column on how many instances):")
+        print("\nNumber of instances on which the row run is strictly better than the column run:")
         print(" " * 14 + "".join(f"{l:>14}" for l in labels))
         for a in labels:
             line = f"{a:<14}"

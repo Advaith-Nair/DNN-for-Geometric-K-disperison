@@ -1,23 +1,19 @@
 """
-Exact k-dispersion solver, implementing Algorithm A(k) from Theorem 1 of
-Chen & Dumitrescu (2025), "A Couple of Simple Algorithms for k-Dispersion".
+Exact solver for k-dispersion.
 
-This is a GRADING TOOL, not part of the actual solver pipeline. It exists
-purely to give ground-truth answers to compare the dNN + binary search
-pipeline against, at a scale beyond what brute force can handle.
+Implements Algorithm A(k) of Chen and Dumitrescu, "A Couple of Simple
+Algorithms for k-Dispersion" (arXiv:2511.00692, 2025), Theorem 1. The solver
+is used to obtain reference optima for small instances.
 
-Recursive structure (paraphrasing the paper's Algorithm A(k)):
-    For each pair (a, b) in P:
-        x = dist(a, b)
-        P' = points in P at distance >= x from BOTH a and b
-        if |P'| < k-2: skip this pair
-        recursively find the best (k-2)-subset K' of P' (Algorithm A(k-2))
-        if min pairwise distance in K' < x: skip (a,b can't anchor this)
-        record max(x) achieved this way, with witness {a,b} u K'
+For each pair (a, b) with x = d(a, b), the algorithm keeps the points at
+distance at least x from both a and b, recursively solves (k-2)-dispersion
+on them, and accepts the pair if the recursive solution has minimum distance
+at least x. The best accepted x is optimal, since the closest pair of an
+optimal solution is one of the pairs examined.
 
-Base cases (k=1, 2, 3) are solved by direct brute force, since brute-forcing
-pairs/triples is cheap (O(n^2), O(n^3)) and the paper's own base-case
-citations aren't reproduced here in enough detail to reimplement directly.
+The base cases k <= 3 are solved by enumeration instead of the specialised
+algorithms cited in the paper. This does not affect correctness, only the
+running time.
 """
 
 from __future__ import annotations
@@ -34,14 +30,16 @@ from geometry.points import PointSet
 
 @dataclass
 class ExactResult:
+    """Optimal value and an optimal subset of point indices."""
+
     radius: float
     witness: tuple[int, ...]
 
 
 def _brute_force_small_k(points: PointSet, k: int, allowed_indices: list[int]) -> ExactResult:
-    """Brute force over all k-subsets of allowed_indices. Used for k=1,2,3 base cases."""
+    """Solve k-dispersion on `allowed_indices` by enumeration (used for k <= 3)."""
     if k == 1:
-        # any single point; radius is degenerate (no pairs), report +inf
+        # A single point has no pairwise distance; the value is reported as infinity.
         return ExactResult(radius=float("inf"), witness=(allowed_indices[0],))
 
     best_radius = -1.0
@@ -57,14 +55,16 @@ def _brute_force_small_k(points: PointSet, k: int, allowed_indices: list[int]) -
 
 def exact_k_dispersion(points: PointSet, k: int,
                         allowed_indices: list[int] | None = None) -> ExactResult:
-    """
-    Exact solver via Algorithm A(k) (Theorem 1). Correct but combinatorial --
-    only practical for small k (roughly k <= 6-8 depending on n), since the
-    recursion effectively branches over all pairs at each of k/2 levels.
+    """Solve k-dispersion exactly with Algorithm A(k).
 
-    allowed_indices restricts the point universe considered -- used
-    internally by the recursion; pass None at the top level to use all
-    points.
+    The running time is O(n^(k-1)) up to logarithmic factors, so the solver
+    is intended for small n and k.
+
+    Args:
+        points: The point set.
+        k: Number of points to select.
+        allowed_indices: Subset of points to choose from. Used by the
+            recursion; leave as None to use all points.
     """
     if allowed_indices is None:
         allowed_indices = list(range(points.n))
@@ -84,7 +84,7 @@ def exact_k_dispersion(points: PointSet, k: int,
             a, b = allowed_indices[i], allowed_indices[j]
             x = points.dist[a, b]
 
-            # P' = points at distance >= x from BOTH a and b
+            # Points that can be selected together with a and b at value x.
             remaining = [
                 p for p in allowed_indices
                 if p != a and p != b and points.dist[p, a] >= x and points.dist[p, b] >= x
@@ -103,9 +103,7 @@ def exact_k_dispersion(points: PointSet, k: int,
                 best_witness = (a, b) + sub_result.witness
 
     if best_witness is None:
-        # no valid (a,b) anchor pair found -- k-dispersion infeasible at any
-        # positive radius with this many points (shouldn't normally happen
-        # if k <= n, but guard against it)
+        # Not reached when k <= n; kept as a safeguard.
         return ExactResult(radius=0.0, witness=tuple(allowed_indices[:k]))
 
     return ExactResult(radius=best_radius, witness=best_witness)
