@@ -50,5 +50,4 @@
 
 - A DNN/optimum ratio is reported only when the CSV contains a custom exact radius or Gurobi has proved optimality.
 - For time-limited/non-optimal Gurobi runs, the incumbent is not labelled as the optimum. The DNN-to-bound metric is conservative because the Gurobi bound is an upper bound on the optimum.
-- Grouped metrics are descriptive. Two or three replicates are not enough for strong statistical generalization claims; increase the replicate count before final reporting.
-- Runtime comparisons are hardware- and configuration-dependent. Record machine, Python, PyTorch and Gurobi versions in the final methodology.
+- Runtimes depend on hardware and settings (CPU only, single-threaded Gurobi).

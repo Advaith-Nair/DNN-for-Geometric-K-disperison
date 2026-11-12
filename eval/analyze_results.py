@@ -7,10 +7,10 @@ The analyzer never treats a time-limited Gurobi incumbent as an optimum:
   ratio and a certified gap-to-bound, not an optimality ratio.
 
 Usage from the project root:
-    python eval/analyze_results.py \
-        --input eval/results_gurobi_medium_independent.csv
+    python eval/analyze_results.py --input eval/final_full.csv
 
-Outputs are written to eval/analysis_<input-stem>/ by default.
+Outputs go to eval/analysis_<input-stem>/ by default. Each plot is saved as
+PNG (300 dpi) and PDF.
 """
 from __future__ import annotations
 
@@ -287,7 +287,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def _fmt(value: Any, digits: int = 4) -> str:
     if value is None:
-        return "—"
+        return "-"
     try:
         return f"{float(value):.{digits}f}"
     except (ValueError, TypeError):
@@ -317,7 +317,7 @@ def write_markdown_report(path: Path, stats: dict[str, Any], groups: list[dict[s
         f"| Mean DNN conservative gap to Gurobi bound | {_fmt(stats.get('dnn_bound_gap_mean_pct'), 3)}% |",
         f"| Mean DNN runtime | {_fmt(stats.get('dnn_runtime_mean_s'), 3)} s |",
         f"| Mean Gurobi solver runtime | {_fmt(stats.get('gurobi_solver_runtime_mean_s'), 4)} s |",
-        f"| Gurobi proven-optimal count | {stats.get('gurobi_optimal_count', '—')}/{len([r for r in groups]) if False else stats.get('instances_total', 0)} |",
+        f"| Gurobi proven-optimal count | {stats.get('gurobi_optimal_count', '-')}/{stats.get('instances_total', 0)} |",
         "",
         "## Results by distribution, n and k",
         "",
@@ -342,11 +342,69 @@ def write_markdown_report(path: Path, stats: dict[str, Any], groups: list[dict[s
         "",
         "- A DNN/optimum ratio is reported only when the CSV contains a custom exact radius or Gurobi has proved optimality.",
         "- For time-limited/non-optimal Gurobi runs, the incumbent is not labelled as the optimum. The DNN-to-bound metric is conservative because the Gurobi bound is an upper bound on the optimum.",
-        "- Grouped metrics are descriptive. Two or three replicates are not enough for strong statistical generalization claims; increase the replicate count before final reporting.",
-        "- Runtime comparisons are hardware- and configuration-dependent. Record machine, Python, PyTorch and Gurobi versions in the final methodology.",
+        "- Runtimes depend on hardware and settings (CPU only, single-threaded Gurobi).",
         "",
     ])
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# Plot styling: plain academic look (serif text, full frame, inward ticks).
+# Colors are color-blind safe and every series also has its own marker,
+# so the figures still read correctly in grayscale print.
+INK = "#000000"
+MUTED = "#4d4d4d"
+GRID = "#d9d9d9"
+SERIES = ["#1f5fae", "#d1572a", "#2e8b57"]
+MARKERS = ["o", "s", "^"]
+
+
+def _style(plt) -> None:
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "STIXGeneral", "DejaVu Serif"],
+        "mathtext.fontset": "stix",
+        "font.size": 9,
+        "axes.titlesize": 9,
+        "axes.titleweight": "normal",
+        "axes.labelsize": 9,
+        "axes.edgecolor": INK,
+        "axes.linewidth": 0.6,
+        "axes.grid": False,
+        "axes.axisbelow": True,
+        "grid.color": GRID,
+        "grid.linestyle": ":",
+        "grid.linewidth": 0.5,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+        "xtick.major.size": 3,
+        "ytick.major.size": 3,
+        "xtick.minor.size": 1.5,
+        "ytick.minor.size": 1.5,
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+        "legend.frameon": True,
+        "legend.edgecolor": INK,
+        "legend.fancybox": False,
+        "legend.framealpha": 1.0,
+        "patch.linewidth": 0.6,
+        "lines.linewidth": 1.2,
+        "lines.markersize": 4,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.02,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    })
+
+
+def _save(fig, out_dir: Path, stem: str, created: list[str]) -> None:
+    fig.savefig(out_dir / f"{stem}.png", dpi=300)
+    fig.savefig(out_dir / f"{stem}.pdf")
+    created.append(f"{stem}.png")
 
 
 def make_plots(enriched: list[dict[str, Any]], groups: list[dict[str, Any]], out_dir: Path) -> list[str]:
@@ -356,116 +414,151 @@ def make_plots(enriched: list[dict[str, Any]], groups: list[dict[str, Any]], out
         import matplotlib.pyplot as plt
         import numpy as np
     except ImportError:
+        print("matplotlib not installed - skipping plots (pip install matplotlib)")
         return []
 
+    _style(plt)
     created: list[str] = []
-    # Quality versus n, with replicate range shown as error bars.
+    dists = sorted({g["dist"] for g in groups})
+    letters = "abcdefgh"
+
+    # Quality vs n: one panel per distribution, one line per k.
+    # Error bars span the worst and best replicate; lines are offset slightly
+    # in n so the bars don't sit on top of each other.
     eligible = [g for g in groups if g.get("dnn_ratio_mean") is not None]
     if eligible:
-        fig, ax = plt.subplots(figsize=(8.5, 5.2))
-        series = sorted({(g["dist"], g["k"]) for g in eligible})
-        for dist, k in series:
-            data = sorted([g for g in eligible if g["dist"] == dist and g["k"] == k], key=lambda x: x["n"])
-            xs = [g["n"] for g in data]
-            ys = [g["dnn_ratio_mean"] for g in data]
-            # Use replicate-level range when available; summary min is worst ratio.
-            lower = [max(0.0, y - (g.get("dnn_ratio_worst") or y)) for y, g in zip(ys, data)]
-            upper = [max(0.0, (g.get("dnn_ratio_max") or y) - y) for y, g in zip(ys, data)]
-            ax.errorbar(xs, ys, yerr=[lower, upper], marker="o", capsize=3, label=f"{dist}, k={k}")
-        ax.set_xlabel("Number of points (n)")
-        ax.set_ylabel("DNN / proven optimum")
-        ax.set_title("DNN solution quality by problem size")
+        panels = [d for d in dists if any(g["dist"] == d for g in eligible)]
+        ks = sorted({g["k"] for g in eligible})
+        fig, axes = plt.subplots(1, len(panels), figsize=(3.4 * len(panels), 2.4),
+                                 sharey=True, squeeze=False)
         worst_all = min((g.get("dnn_ratio_worst") or g["dnn_ratio_mean"]) for g in eligible)
-        ax.set_ylim(min(0.95, worst_all - 0.02), 1.01)
-        ax.grid(True, alpha=0.25)
-        ax.legend(fontsize=8)
+        all_optimal = worst_all >= 1.0 - TOLERANCE
+        lo = 0.98 if all_optimal else worst_all - 0.01
+        for p_i, (ax, dist) in enumerate(zip(axes[0], panels)):
+            for i, k in enumerate(ks):
+                data = sorted([g for g in eligible if g["dist"] == dist and g["k"] == k],
+                              key=lambda g: g["n"])
+                if not data:
+                    continue
+                xs = [g["n"] for g in data]
+                ys = [g["dnn_ratio_mean"] for g in data]
+                below = [max(0.0, y - (g.get("dnn_ratio_worst") or y)) for y, g in zip(ys, data)]
+                above = [max(0.0, (g.get("dnn_ratio_max") or y) - y) for y, g in zip(ys, data)]
+                shift = (i - (len(ks) - 1) / 2) * 0.6
+                c = SERIES[i % len(SERIES)]
+                ax.errorbar([x + shift for x in xs], ys, yerr=[below, above], color=c,
+                            marker=MARKERS[i % 3], elinewidth=0.6, capsize=1.8,
+                            capthick=0.6, label=f"$k={k}$")
+            ax.axhline(1.0, color=MUTED, linewidth=0.5, linestyle="--", zorder=0)
+            ax.set_xlabel("Number of points $n$")
+            ax.set_xticks(sorted({g["n"] for g in eligible}))
+            ax.set_ylim(lo, 1.0 + (1.0 - lo) * 0.06)
+            ax.grid(True, axis="y")
+            ax.set_title(f"({letters[p_i]}) {dist.capitalize()}")
+            if all_optimal:
+                ax.text(0.5, 0.4, "all instances optimal", transform=ax.transAxes,
+                        ha="center", color=MUTED, fontsize=8, style="italic")
+        axes[0][0].set_ylabel("$x_{\\mathrm{dNN}}\\,/\\,x^{*}$")
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper center", ncol=len(ks),
+                   bbox_to_anchor=(0.5, 1.07))
         fig.tight_layout()
-        filename = "quality_by_n.png"
-        fig.savefig(out_dir / filename, dpi=180)
+        _save(fig, out_dir, "quality_by_n", created)
         plt.close(fig)
-        created.append(filename)
 
-    # Runtime versus n. Solver runtime is the Gurobi-reported runtime.
+    # Runtime vs n (log scale): color = method, line/marker = distribution.
     runtime_rows = [g for g in groups if g.get("dnn_runtime_mean_s") is not None]
     if runtime_rows:
-        fig, ax = plt.subplots(figsize=(8.5, 5.2))
-        for dist in sorted({g["dist"] for g in runtime_rows}):
-            data = sorted([g for g in runtime_rows if g["dist"] == dist], key=lambda x: x["n"])
-            # Aggregate across k at each n for a compact scaling view.
+        fig, ax = plt.subplots(figsize=(3.4, 2.5))
+        styles = [("-", "o"), ("--", "s")]
+        for j, dist in enumerate(sorted({g["dist"] for g in runtime_rows})):
             by_n: dict[int, list[dict[str, Any]]] = defaultdict(list)
-            for g in data:
-                by_n[g["n"]].append(g)
+            for g in runtime_rows:
+                if g["dist"] == dist:
+                    by_n[g["n"]].append(g)
             xs = sorted(by_n)
             dnn = [_mean(r.get("dnn_runtime_mean_s") for r in by_n[n]) for n in xs]
-            gurobi = [_mean(r.get("gurobi_solver_runtime_mean_s") for r in by_n[n]) for n in xs]
-            ax.plot(xs, dnn, marker="o", label=f"DNN ({dist})")
-            if any(v is not None for v in gurobi):
-                ax.plot(xs, gurobi, marker="s", label=f"Gurobi solver ({dist})")
-        ax.set_xlabel("Number of points (n)")
-        ax.set_ylabel("Mean runtime (seconds, log scale)")
+            gur = [_mean(r.get("gurobi_solver_runtime_mean_s") for r in by_n[n]) for n in xs]
+            ls, mk = styles[j % 2]
+            ax.plot(xs, dnn, color=SERIES[0], linestyle=ls, marker=mk, label=f"dNN ({dist})")
+            if any(v is not None for v in gur):
+                ax.plot(xs, gur, color=SERIES[1], linestyle=ls, marker=mk,
+                        markerfacecolor="white", label=f"Gurobi ({dist})")
+            ax.set_xticks(xs)
         ax.set_yscale("log")
-        ax.set_title("Runtime scaling: DNN versus Gurobi")
-        ax.grid(True, which="both", alpha=0.25)
-        ax.legend(fontsize=8)
+        ax.set_xlabel("Number of points $n$")
+        ax.set_ylabel("Mean runtime (s)")
+        ax.grid(True, axis="y", which="major")
+        ax.legend(loc="center right", ncol=1)
         fig.tight_layout()
-        filename = "runtime_by_n.png"
-        fig.savefig(out_dir / filename, dpi=180)
+        _save(fig, out_dir, "runtime_by_n", created)
         plt.close(fig)
-        created.append(filename)
 
-    # One DNN gap heatmap per distribution. Prefer proven-optimum gaps;
-    # if an entire group has no proven optimum, use the conservative gap to
-    # Gurobi's upper bound and make that explicit in the title.
-    for dist in sorted({g["dist"] for g in groups if (
-            g.get("dnn_gap_mean_pct") is not None or g.get("dnn_bound_gap_mean_pct") is not None)}):
+    # Mean gap heatmap per distribution (k rows, n columns). Uses the proven
+    # optimum when available, otherwise the conservative gap to Gurobi's bound.
+    for dist in dists:
         data = [g for g in groups if g["dist"] == dist and (
             g.get("dnn_gap_mean_pct") is not None or g.get("dnn_bound_gap_mean_pct") is not None)]
+        if not data:
+            continue
         ns = sorted({g["n"] for g in data})
         ks = sorted({g["k"] for g in data})
         matrix = np.full((len(ks), len(ns)), np.nan)
-        lookup = {(g["k"], g["n"]): (
-            g.get("dnn_gap_mean_pct") if g.get("dnn_gap_mean_pct") is not None
-            else g.get("dnn_bound_gap_mean_pct")) for g in data}
+        for g in data:
+            v = g.get("dnn_gap_mean_pct")
+            if v is None:
+                v = g.get("dnn_bound_gap_mean_pct")
+            matrix[ks.index(g["k"]), ns.index(g["n"])] = v
         uses_bound_only = all(g.get("dnn_gap_mean_pct") is None for g in data)
-        for i, k in enumerate(ks):
-            for j, n in enumerate(ns):
-                if (k, n) in lookup:
-                    matrix[i, j] = lookup[(k, n)]
-        fig, ax = plt.subplots(figsize=(8, max(3.5, 0.65 * len(ks) + 1.5)))
-        masked = np.ma.masked_invalid(matrix)
-        image = ax.imshow(masked, aspect="auto")
+        vmax = max(1.0, float(np.nanmax(matrix)))
+        fig, ax = plt.subplots(figsize=(0.7 * len(ns) + 1.4, 0.5 * len(ks) + 0.9))
+        image = ax.imshow(np.ma.masked_invalid(matrix), aspect="auto", cmap="Greys",
+                          vmin=0.0, vmax=vmax * 1.15)
         ax.set_xticks(range(len(ns)), labels=[str(n) for n in ns])
         ax.set_yticks(range(len(ks)), labels=[str(k) for k in ks])
-        ax.set_xlabel("n")
-        ax.set_ylabel("k")
-        title_kind = "mean DNN gap to Gurobi upper bound" if uses_bound_only else "mean DNN gap to proven optimum / upper bound"
-        ax.set_title(f"{title_kind.title()} (%) — {dist}")
+        ax.tick_params(which="both", length=0, top=False, right=False)
+        ax.set_xlabel("Number of points $n$")
+        ax.set_ylabel("$k$")
         for i in range(len(ks)):
             for j in range(len(ns)):
                 if not np.isnan(matrix[i, j]):
-                    ax.text(j, i, f"{matrix[i, j]:.2f}", ha="center", va="center")
-        fig.colorbar(image, ax=ax, label="Gap (%)")
+                    dark = matrix[i, j] > 0.6 * vmax
+                    ax.text(j, i, f"{matrix[i, j]:.2f}", ha="center", va="center",
+                            fontsize=8, color="white" if dark else INK)
+        cbar = fig.colorbar(image, ax=ax, fraction=0.05, pad=0.03)
+        what = "gap to Gurobi bound (%)" if uses_bound_only else "Mean gap to optimum (%)"
+        cbar.set_label(what)
+        cbar.ax.tick_params(direction="in", length=2, width=0.6)
+        cbar.outline.set_linewidth(0.6)
+        ax.set_title(dist.capitalize())
         fig.tight_layout()
-        filename = f"optimality_gap_{dist}.png"
-        fig.savefig(out_dir / filename, dpi=180)
+        _save(fig, out_dir, f"optimality_gap_{dist}", created)
         plt.close(fig)
-        created.append(filename)
 
-    # Per-instance gap distribution, only for proven references.
+    # Per-instance gap histogram (proven references only).
     gaps = [r.get("dnn_gap_to_proven_optimum_pct") for r in enriched
             if r.get("dnn_gap_to_proven_optimum_pct") is not None]
     if gaps:
-        fig, ax = plt.subplots(figsize=(8.5, 5.2))
-        ax.hist(gaps, bins=min(12, max(5, len(gaps) // 2)))
-        ax.set_xlabel("DNN gap to proven optimum (%)")
+        fig, ax = plt.subplots(figsize=(3.4, 2.3))
+        top = max(gaps)
+        if top > 0:
+            w = top / 12
+            bins = np.arange(-w / 2, top + w, w)
+        else:
+            bins = np.array([-0.15, 0.15])
+        ax.hist(gaps, bins=bins, color="#bfbfbf", edgecolor=INK, linewidth=0.6)
+        ax.set_xlabel("Gap to optimal $x$ (%)")
         ax.set_ylabel("Number of instances")
-        ax.set_title("Distribution of DNN optimality gaps")
-        ax.grid(True, axis="y", alpha=0.25)
+        ax.grid(True, axis="y")
+        exact = sum(1 for v in gaps if v <= TOLERANCE * 100)
+        ax.text(0.97, 0.93, f"{exact} of {len(gaps)} exactly optimal", transform=ax.transAxes,
+                ha="right", va="top", fontsize=8)
+        if top == 0:
+            ax.set_xticks([0])
+            ax.set_xlim(-1, 1)
         fig.tight_layout()
-        filename = "dnn_optimality_gap_distribution.png"
-        fig.savefig(out_dir / filename, dpi=180)
+        _save(fig, out_dir, "dnn_optimality_gap_distribution", created)
         plt.close(fig)
-        created.append(filename)
 
     return created
 

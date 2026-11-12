@@ -5,12 +5,7 @@ This implements the MIS-reduction penalty function from Alkhouri, Atia &
 Velasquez (2022), adapted for k-dispersion's DECISION question rather than
 their original MAXIMIZATION question.
 
-Key adaptation (this is fix #1 from our plan): the paper always trains
-toward target = -n/2 (find the largest independent set the graph has to
-offer). We only need to know whether an independent set of size >= k
-exists, so we train toward target = -k/2 instead. This is a strictly
-easier question and is the primary fix for the underconvergence-near-
-threshold problem.
+We train toward −k/2 instead of the paper’s −n/2 because we only need a set of size k.
 
 Base formula (Eq. 7 in the paper), theta in [0,1]^n, one dial per node:
 
