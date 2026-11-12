@@ -40,17 +40,6 @@ class PointSet:
         """Return the largest pairwise distance."""
         return float(self.dist.max())
 
-    def min_positive_gap(self) -> float:
-        """Return the smallest strictly positive pairwise distance.
-
-        Returns 0.0 if all points coincide.
-        """
-        off_diag = self.dist[~np.eye(self.n, dtype=bool)]
-        positive = off_diag[off_diag > 0]
-        if positive.size == 0:
-            return 0.0
-        return float(positive.min())
-
 
 def _pairwise_distances(coords: np.ndarray) -> np.ndarray:
     """Return the (n, n) Euclidean distance matrix of the given coordinates."""

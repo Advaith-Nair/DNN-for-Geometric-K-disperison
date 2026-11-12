@@ -4,16 +4,10 @@ Binary search for the k-dispersion value.
 The optimal value x* is the largest x for which the conflict graph G_x has an
 independent set of size k. Feasibility is monotone in x, so x* can be found
 by binary search, using the feasibility oracle as the decision procedure at
-each step. All problem-specific work is done by the oracle; this module only
-maintains the search interval and the best solution found so far.
-
-Two search modes are provided:
-
-* "discrete" (default): search over the sorted distinct pairwise distances.
-  Since x* is always one of these distances, the result is exact whenever
-  the oracle answers correctly.
-* "continuous": bisection on the interval [0, diameter] up to a tolerance.
-  This mode is kept to reproduce earlier experiments.
+each step. Since x* is always one of the pairwise distances, the search runs
+over the sorted distinct distances, and the result is exact whenever the
+oracle answers correctly. All problem-specific work is done by the oracle;
+this module only maintains the search interval and the best solution found.
 """
 
 from __future__ import annotations
@@ -39,15 +33,10 @@ class SearchConfig:
     Attributes:
         oracle_cfg: Configuration passed to the feasibility oracle.
         max_iterations: Upper bound on the number of oracle calls.
-        epsilon: Interval tolerance for the continuous mode. If None, a
-            tolerance of 1e-4 times the diameter is used.
-        mode: "discrete" or "continuous" (see module docstring).
     """
 
     oracle_cfg: OracleConfig = None
     max_iterations: int = 40
-    epsilon: float | None = None
-    mode: str = "discrete"
 
     def __post_init__(self):
         if self.oracle_cfg is None:
@@ -133,7 +122,7 @@ def _solve_discrete(points: PointSet, k: int, cfg: SearchConfig,
 
 def solve_k_dispersion(points: PointSet, k: int, cfg: SearchConfig,
                         base_seed: int | None = None) -> SearchResult:
-    """Approximately solve k-dispersion by binary search with the oracle.
+    """Solve k-dispersion by binary search with the feasibility oracle.
 
     Args:
         points: The point set.
@@ -151,59 +140,4 @@ def solve_k_dispersion(points: PointSet, k: int, cfg: SearchConfig,
         raise ValueError(f"k={k} exceeds number of points n={points.n}")
     if k == 1:
         return SearchResult(best_radius=float("inf"), best_witness=[0], iterations_run=0)
-    if cfg.mode == "discrete":
-        return _solve_discrete(points, k, cfg, base_seed)
-    if cfg.mode != "continuous":
-        raise ValueError(f"unknown search mode: {cfg.mode}")
-
-    # Continuous bisection on [0, diameter]. The tolerance is tied to the
-    # diameter rather than to the smallest pairwise gap, which can be too
-    # coarse and stop the search short of the optimum.
-    lo = 0.0
-    hi = points.diameter()
-    epsilon = cfg.epsilon if cfg.epsilon is not None else max(hi * 1e-4, 1e-9)
-
-    best_radius = 0.0
-    best_witness: list[int] | None = None
-    history = []
-
-    iterations = 0
-    while (hi - lo) > epsilon and iterations < cfg.max_iterations:
-        mid = (lo + hi) / 2.0
-        g = build_conflict_graph(points, mid)
-
-        result = feasibility_oracle(g, k, cfg.oracle_cfg, base_seed=base_seed)
-
-        history.append({
-            "iteration": iterations,
-            "x_guess": mid,
-            "feasible": result.feasible,
-            "restarts_used": result.restarts_used,
-            "lo_before": lo,
-            "hi_before": hi,
-        })
-
-        if result.feasible:
-            lo = mid
-            best_radius = mid
-            best_witness = result.witness
-        else:
-            hi = mid
-
-        iterations += 1
-
-    if best_witness is None:
-        # No feasible guess was recorded; fall back to x = 0, which is
-        # always feasible.
-        g = build_conflict_graph(points, 0.0)
-        result = feasibility_oracle(g, k, cfg.oracle_cfg, base_seed=base_seed)
-        if result.feasible:
-            best_radius = 0.0
-            best_witness = result.witness
-
-    return SearchResult(
-        best_radius=best_radius,
-        best_witness=best_witness if best_witness is not None else [],
-        iterations_run=iterations,
-        history=history,
-    )
+    return _solve_discrete(points, k, cfg, base_seed)

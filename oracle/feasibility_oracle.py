@@ -18,7 +18,7 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from geometry.conflict_graph import ConflictGraph
 
-from dnn_core import TrainConfig, train_dials, extract_set, degree_based_init
+from dnn_core import TrainConfig, train_dials, extract_set
 from repair import repair
 from certificates import certified_infeasible
 
@@ -50,27 +50,17 @@ class OracleConfig:
 
 @dataclass
 class OracleResult:
-    """Answer of the oracle, with per-attempt diagnostics.
+    """Answer of the oracle.
 
     Attributes:
         feasible: Whether an independent set of size k was found.
         witness: The k vertices found, or None.
         restarts_used: Number of attempts made.
-        per_attempt_final_value: Final loss value of each attempt.
-        per_attempt_target: Target value of the loss.
-        per_attempt_converged: Whether each attempt reached the target.
-        per_attempt_extracted_size: Size of the rounded set in each attempt.
-        per_attempt_repaired_size: Size after post-processing in each attempt.
     """
 
     feasible: bool
     witness: list[int] | None
     restarts_used: int
-    per_attempt_final_value: list[float]
-    per_attempt_target: float
-    per_attempt_converged: list[bool]
-    per_attempt_extracted_size: list[int]
-    per_attempt_repaired_size: list[int]
 
 
 def feasibility_oracle(g: ConflictGraph, k: int, cfg: OracleConfig,
@@ -88,56 +78,18 @@ def feasibility_oracle(g: ConflictGraph, k: int, cfg: OracleConfig,
         base_seed: Base seed for the attempts; None for unseeded runs.
     """
     if cfg.use_certificate and certified_infeasible(g.adj, k):
-        return OracleResult(
-            feasible=False, witness=None, restarts_used=0,
-            per_attempt_final_value=[], per_attempt_target=-float(k) / 2.0,
-            per_attempt_converged=[], per_attempt_extracted_size=[],
-            per_attempt_repaired_size=[],
-        )
-
-    per_attempt_final_value = []
-    per_attempt_converged = []
-    per_attempt_extracted_size = []
-    per_attempt_repaired_size = []
-    target = None
+        return OracleResult(feasible=False, witness=None, restarts_used=0)
 
     for attempt in range(cfg.max_restarts):
         seed = None if base_seed is None else base_seed + attempt
         init_strategy = "degree" if attempt % 2 == 0 else "random"
 
         result = train_dials(g, k, cfg.train_cfg, seed=seed, init_strategy=init_strategy)
-        target = result.target
-
-        per_attempt_final_value.append(result.final_penalty_value)
-        per_attempt_converged.append(result.converged)
-
         candidate = extract_set(result.theta, alpha=cfg.alpha)
-        per_attempt_extracted_size.append(len(candidate))
-
         repaired = repair(candidate, g, local_search=cfg.local_search)
-        per_attempt_repaired_size.append(len(repaired))
 
         if len(repaired) >= k:
             # Any k vertices of an independent set are independent.
-            witness = repaired[:k]
-            return OracleResult(
-                feasible=True,
-                witness=witness,
-                restarts_used=attempt + 1,
-                per_attempt_final_value=per_attempt_final_value,
-                per_attempt_target=target,
-                per_attempt_converged=per_attempt_converged,
-                per_attempt_extracted_size=per_attempt_extracted_size,
-                per_attempt_repaired_size=per_attempt_repaired_size,
-            )
+            return OracleResult(feasible=True, witness=repaired[:k], restarts_used=attempt + 1)
 
-    return OracleResult(
-        feasible=False,
-        witness=None,
-        restarts_used=cfg.max_restarts,
-        per_attempt_final_value=per_attempt_final_value,
-        per_attempt_target=target,
-        per_attempt_converged=per_attempt_converged,
-        per_attempt_extracted_size=per_attempt_extracted_size,
-        per_attempt_repaired_size=per_attempt_repaired_size,
-    )
+    return OracleResult(feasible=False, witness=None, restarts_used=cfg.max_restarts)

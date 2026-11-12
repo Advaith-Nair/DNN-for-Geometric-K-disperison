@@ -26,12 +26,6 @@ def test_diameter():
     assert abs(ps.diameter() - 12.0) < 1e-9
 
 
-def test_min_positive_gap():
-    """The smallest positive distance in the chain is 2."""
-    ps = make_chain_example()
-    assert abs(ps.min_positive_gap() - 2.0) < 1e-9
-
-
 def test_conflict_graph_is_path_at_x4():
     """At x = 4 only consecutive points conflict, giving a path on six vertices."""
     ps = make_chain_example()

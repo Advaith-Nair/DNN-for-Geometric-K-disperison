@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -140,8 +140,7 @@ class TrainConfig:
     """Optimisation settings for one run of the dNN.
 
     Attributes:
-        target_mode: "k" (loss f, target -k/2), "n" (loss f, target -n/2,
-            as in the paper) or "k2" (loss h, target -k^2/2).
+        target_mode: "k" (loss f, target -k/2) or "k2" (loss h, target -k^2/2).
         lr: Adam learning rate.
         max_steps: Maximum number of Adam steps.
         convergence_tol: Stop when |loss value - target| is below this.
@@ -182,7 +181,6 @@ class TrainResult:
 
 
 def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
-                 init_theta: torch.Tensor | None = None,
                  seed: int | None = None,
                  init_strategy: str = "degree") -> TrainResult:
     """Optimise theta with Adam for the decision question "is alpha(G) >= k?".
@@ -194,15 +192,12 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
         g: Conflict graph.
         k: Required independent-set size.
         cfg: Optimisation settings.
-        init_theta: Optional initial parameters; overrides init_strategy.
         seed: Seed for the initialisation.
         init_strategy: "degree" (Eq. 12) or "random".
     """
     device = torch.device(cfg.device)
 
-    if init_theta is not None:
-        theta = init_theta.clone().detach().to(device).requires_grad_(True)
-    elif init_strategy == "random":
+    if init_strategy == "random":
         theta = random_uniform_init(g, seed=seed).to(device).requires_grad_(True)
     else:
         theta = degree_based_init(g, seed=seed).to(device).requires_grad_(True)
@@ -211,9 +206,6 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
 
     if cfg.target_mode == "k":
         target = -float(k) / 2.0
-        loss_fn = lambda th, leak: base_penalty(th, g, u_idx, v_idx, leak=leak)
-    elif cfg.target_mode == "n":
-        target = -float(g.n) / 2.0
         loss_fn = lambda th, leak: base_penalty(th, g, u_idx, v_idx, leak=leak)
     elif cfg.target_mode == "k2":
         comp_u, comp_v = _complement_edges_as_tensors(g, device=device)
@@ -249,12 +241,7 @@ def train_dials(g: ConflictGraph, k: int, cfg: TrainConfig,
         if abs(final_val - target) < cfg.convergence_tol:
             break
 
-    if cfg.target_mode == "n":
-        # -n/2 is reachable only on an edgeless graph; treat reaching the
-        # value of a size-k set as convergence.
-        converged = final_val is not None and final_val <= -float(k) / 2.0 + cfg.convergence_tol
-    else:
-        converged = final_val is not None and abs(final_val - target) < cfg.convergence_tol
+    converged = final_val is not None and abs(final_val - target) < cfg.convergence_tol
     return TrainResult(
         theta=theta.detach(),
         final_penalty_value=final_val,

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import itertools
-import time
 from typing import Any
 
 import numpy as np
@@ -65,7 +64,7 @@ class GurobiResult:
     ``radius`` is the minimum pairwise distance of the returned point set,
     computed from the distance matrix. The remaining fields are taken from
     the solver (status, objective value and bound, gap, node count, model
-    size and timings).
+    size and runtime).
     """
 
     radius: float | None
@@ -74,7 +73,6 @@ class GurobiResult:
     status_name: str
     is_optimal: bool
     runtime: float
-    wall_time: float
     obj_val: float | None
     obj_bound: float | None
     mip_gap: float | None
@@ -94,15 +92,6 @@ def _load_gurobi():
             "environment and run: python -m pip install gurobipy"
         ) from exc
     return gp, GRB
-
-
-def gurobi_available() -> bool:
-    """Return True if gurobipy can be imported. The licence is not checked."""
-    try:
-        import gurobipy  # noqa: F401
-        return True
-    except ImportError:
-        return False
 
 
 def _status_name(status: int, GRB: Any) -> str:
@@ -146,7 +135,6 @@ def solve_k_dispersion_gurobi(
     n = points.n
     dist = np.asarray(points.dist, dtype=float)
     diameter = float(np.max(dist))
-    start = time.perf_counter()
 
     model = gp.Model("k_dispersion_direct_milp")
     try:
@@ -216,7 +204,6 @@ def solve_k_dispersion_gurobi(
             status_name=_status_name(status, GRB),
             is_optimal=(status == GRB.OPTIMAL),
             runtime=runtime,
-            wall_time=time.perf_counter() - start,
             obj_val=obj_val,
             obj_bound=obj_bound,
             mip_gap=mip_gap,

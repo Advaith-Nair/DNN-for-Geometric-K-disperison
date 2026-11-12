@@ -82,7 +82,7 @@ def test_k_equals_1():
 def test_k_equals_n():
     """For k = n all points are selected and the value is the minimum pairwise distance."""
     ps = random_uniform_points(6, dim=2, seed=4)
-    true_min_gap = ps.min_positive_gap()
+    true_min_gap = float(ps.dist[np.triu_indices(ps.n, k=1)].min())
 
     result = solve_k_dispersion(ps, k=ps.n, cfg=default_search_cfg(), base_seed=0)
 
@@ -121,8 +121,8 @@ def test_discrete_search_is_exact_with_exact_oracle():
     def exact_oracle(g, k, cfg, base_seed=None):
         for combo in itertools.combinations(range(g.n), k):
             if g.is_independent_set(combo):
-                return OracleResult(True, list(combo), 1, [], 0.0, [], [], [])
-        return OracleResult(False, None, 1, [], 0.0, [], [], [])
+                return OracleResult(True, list(combo), 1)
+        return OracleResult(False, None, 1)
 
     original = bs.feasibility_oracle
     bs.feasibility_oracle = exact_oracle

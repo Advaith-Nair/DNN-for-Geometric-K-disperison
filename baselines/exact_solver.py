@@ -21,8 +21,6 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass
 
-import numpy as np
-
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from geometry.points import PointSet

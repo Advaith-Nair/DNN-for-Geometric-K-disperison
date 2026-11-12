@@ -32,8 +32,8 @@ of the paper:
 
 - Target is -k/2 instead of -n/2, since we only need k points, not the
   largest possible set.
-- Leaky ReLU (annealed towards ReLU) so dials at 0 don't get stuck, plus a
-  small term pushing θ towards 0 or 1.
+- Leaky ReLU (annealed towards ReLU) so values below 0.5 still get a
+  gradient, plus a small term pushing θ towards 0 or 1.
 - Restarts that alternate between degree-based starts (Eq. 12 of the paper)
   and random starts.
 - After rounding: remove conflicts, greedily add any point that fits, then
@@ -48,14 +48,35 @@ geometry/        point generators, distance matrix, conflict graph
 oracle/          dNN loss and training, restarts, repair + local search, clique bound
 binary_search/   search over pairwise distances
 baselines/       exact recursive solver, Gurobi MILP, greedy farthest-point
-eval/            experiment runner, analysis/plots, result CSVs
+eval/            experiment runner, analysis and comparison scripts, results
 ```
 
 Each folder has its own `test_*.py`.
 
+The exact solver implements Algorithm A(k) of Chen and Dumitrescu (2025),
+with brute force for the k <= 3 base cases. The greedy baseline is the
+farthest-point heuristic of Ravi et al. (1994).
+
+Result files in `eval/`:
+
+| File | Experiment |
+|---|---|
+| `final_small.csv` | small instances, full method, vs exact solver and Gurobi |
+| `final_full.csv` | medium instances, full method, vs Gurobi |
+| `final_no_ls.csv` | medium, without local search |
+| `final_untrained.csv` | medium, without training |
+| `final_large_trained_ls.csv` | large, full method |
+| `final_large_untrained_ls.csv` | large, without training |
+| `final_large_trained.csv` | large, without local search |
+| `final_large_untrained.csv` | large, without training or local search |
+
+`analysis_final_*/` holds the summary tables and plots for the four
+small/medium CSVs.
+
 ## Setup
 
-Python 3.10, 64-bit.
+Python 3.10 or newer, 64-bit. The results below were produced with
+Python 3.10, PyTorch 2.10 (CPU) and Gurobi 13.0.3.
 
 ```
 pip install -r requirements.txt
@@ -79,7 +100,13 @@ python -m pytest -q
 ```
 
 Same for `oracle`, `baselines` and `binary_search`. For `eval`, run
-`python -m pytest -q eval` from the root.
+`python -m pytest -q eval` from the root. There are 44 tests in total; the
+two Gurobi tests are skipped if gurobipy is not installed.
+
+Every run is seeded, so re-running a command with the same library versions
+reproduces the solutions in the CSVs. Only the timing columns change.
+
+All commands are run from the repository root.
 
 Small instances, checked against the exact solver and Gurobi:
 
@@ -93,15 +120,30 @@ Medium instances against Gurobi:
 python eval/run_eval.py --with-gurobi --skip-exact --independent-sizes --gurobi-time-limit 60 --gurobi-threads 1 --restarts 60 --certify --ns 30 40 50 60 --ks 6 8 10 --seeds 5 --seed-start 3000 --dists uniform clustered --out eval/final_full.csv
 ```
 
-Useful flags for ablations: `--no-local-search`, `--max-steps 0` (skip
-training, use the initial θ directly), `--target-mode k2` (the paper's
-enhanced loss, Eq. 10).
+Ablations on the medium instances use the same command with one extra flag:
+`--no-local-search` (output `eval/final_no_ls.csv`) or `--max-steps 0`, which
+skips training and rounds the initial θ directly (output
+`eval/final_untrained.csv`).
+
+Large instances (no reference solver; compared against each other):
+
+```
+python eval/run_eval.py --skip-exact --independent-sizes --ns 100 150 --ks 10 15 --seeds 5 --seed-start 4000 --dists uniform clustered --restarts 10 --certify --out eval/final_large_trained_ls.csv
+```
+
+The other three large runs add `--max-steps 0`, `--no-local-search`, or
+both, writing to `final_large_untrained_ls.csv`, `final_large_trained.csv`
+and `final_large_untrained.csv`.
+
+`--target-mode k2` switches to the enhanced loss of the paper (Eq. 10); it
+was not used for the results below.
 
 Plots and summary tables:
 
 ```
 python eval/analyze_results.py --input eval/final_full.csv
 python eval/compare_runs.py full=eval/final_full.csv no_ls=eval/final_no_ls.csv untrained=eval/final_untrained.csv
+python eval/compare_runs.py trained_ls=eval/final_large_trained_ls.csv untrained_ls=eval/final_large_untrained_ls.csv trained=eval/final_large_trained.csv untrained=eval/final_large_untrained.csv
 ```
 
 `analyze_results.py` writes into `eval/analysis_<csv name>/`. Every plot is
@@ -155,8 +197,17 @@ What we took from this:
 - Only tested on random 2D points. The method only uses pairwise distances, so
   other dimensions should work without changes, but we haven't tried.
 
-## Reference
+## References
 
 I. R. Alkhouri, G. K. Atia, A. Velasquez. A differentiable approach to the
 maximum independent set problem using dataless neural networks. Neural
 Networks, 155:168-176, 2022. https://doi.org/10.1016/j.neunet.2022.08.008
+
+K. Chen, A. Dumitrescu. A couple of simple algorithms for k-dispersion.
+arXiv:2511.00692, 2025.
+
+S. S. Ravi, D. J. Rosenkrantz, G. K. Tayi. Heuristic and special case
+algorithms for dispersion problems. Operations Research, 42(2):299-310, 1994.
+
+D. V. Andrade, M. G. C. Resende, R. F. Werneck. Fast local search for the
+maximum independent set problem. Journal of Heuristics, 18(4):525-547, 2012.

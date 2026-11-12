@@ -136,7 +136,6 @@ def run_instance(dist_name, n, k, seed, search_cfg, gurobi_cfg=None, use_exact=T
             (h["restarts_used"] for h in res.history), default=0
         ),
         # Run configuration.
-        "cfg_search_mode": search_cfg.mode,
         "cfg_target_mode": search_cfg.oracle_cfg.train_cfg.target_mode,
         "cfg_max_steps": search_cfg.oracle_cfg.train_cfg.max_steps,
         "cfg_restarts": search_cfg.oracle_cfg.max_restarts,
@@ -273,12 +272,8 @@ def main():
     ap.add_argument("--dists", nargs="+", default=["uniform"])
     ap.add_argument("--max-steps", type=int, default=400, help="ADAM steps per oracle attempt")
     ap.add_argument("--restarts", type=int, default=15, help="max oracle restarts")
-    ap.add_argument("--search-mode", choices=["discrete", "continuous"], default="discrete",
-                    help="discrete: search over pairwise distances (default); "
-                         "continuous: bisection on [0, diameter]")
-    ap.add_argument("--target-mode", choices=["k", "n", "k2"], default="k",
-                    help="k: loss f (Eq. 7), target -k/2; n: loss f, target -n/2; "
-                         "k2: loss h (Eq. 10), target -k^2/2")
+    ap.add_argument("--target-mode", choices=["k", "k2"], default="k",
+                    help="k: loss f (Eq. 7), target -k/2; k2: loss h (Eq. 10), target -k^2/2")
     ap.add_argument("--no-local-search", action="store_true",
                     help="disable the 2-improvement local search")
     ap.add_argument("--certify", action="store_true",
@@ -316,7 +311,6 @@ def main():
             local_search=not args.no_local_search,
         ),
         max_iterations=40,
-        mode=args.search_mode,
     )
 
     rows = []
