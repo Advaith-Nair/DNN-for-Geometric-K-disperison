@@ -4,10 +4,12 @@ Unit tests for point sets and conflict graphs.
 Most tests use a small one-dimensional instance (the "chain") whose pairwise
 distances and conflict graphs can be worked out by hand.
 """
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
-from points import make_point_set, random_uniform_points, random_clustered_points
-from conflict_graph import build_conflict_graph
+from geometry.points import make_point_set, random_uniform_points, random_clustered_points
+from geometry.conflict_graph import build_conflict_graph
 
 
 def make_chain_example():
