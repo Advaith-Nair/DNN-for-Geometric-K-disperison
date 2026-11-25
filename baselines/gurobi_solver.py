@@ -1,19 +1,23 @@
 """
 Mixed-integer linear programming (MILP) model for k-dispersion, solved with Gurobi.
 
-Given pairwise distances d[i,j], choose exactly k points and maximise the
-minimum distance between any two selected points:
+Implements the formulation of Kuby (1987) exactly as stated by Sayah and
+Irnich, "A new compact formulation for the discrete p-dispersion problem",
+European Journal of Operational Research 256 (2017), Eq. (4):
 
-    maximize    r
-    subject to  sum_i y[i] = k
-                r <= d[i,j] + M[i,j] * (2 - y[i] - y[j])  for i < j
-                0 <= r <= diameter
-                y[i] in {0, 1}
+    maximize    d                                              (4a)
+    subject to  sum_i x[i] = k                                 (4b)
+                d <= M * (2 - x[i] - x[j]) + d[i,j]   for i < j  (4c)
+                x[i] in {0, 1}                                 (4d)
+                d >= 0                                         (4e)
 
-Here y[i] indicates whether point i is selected and M[i,j] = diameter - d[i,j].
-If both endpoints are selected, the constraint reduces to r <= d[i,j];
-otherwise its right-hand side is at least the diameter and the constraint is
-inactive. The model has n + 1 variables and n(n-1)/2 + 1 constraints.
+Here x[i] indicates whether point i is selected, d is the minimum distance
+between selected points, and M is a single constant equal to the largest
+pairwise distance, as in Sayah and Irnich (Section 3). If both endpoints are
+selected, (4c) reduces to d <= d[i,j]; otherwise its right-hand side is at
+least M and the constraint is inactive. Since k >= 2, at least one pair is
+selected, so d is bounded without an explicit upper bound. The model has
+n + 1 variables and n(n-1)/2 + 1 constraints.
 """
 
 from __future__ import annotations
@@ -145,19 +149,20 @@ def solve_k_dispersion_gurobi(
         model.Params.Seed = int(cfg.seed)
 
         selected = model.addVars(n, vtype=GRB.BINARY, name="selected")
-        radius = model.addVar(lb=0.0, ub=diameter, vtype=GRB.CONTINUOUS, name="radius")
+        # (4e): d >= 0, no upper bound.
+        radius = model.addVar(lb=0.0, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name="radius")
 
+        # (4b): exactly k points are selected.
         model.addConstr(gp.quicksum(selected[i] for i in range(n)) == k,
                         name="choose_exactly_k")
 
-        # The pair (i, j) bounds the radius only when both points are selected.
-        # M_ij = diameter - d_ij is the smallest valid big-M coefficient.
+        # (4c): one big-M constant for all pairs, M = largest distance.
+        big_m = diameter
         for i in range(n):
             for j in range(i + 1, n):
                 dij = float(dist[i, j])
-                big_m = max(0.0, diameter - dij)
                 model.addConstr(
-                    radius <= dij + big_m * (2 - selected[i] - selected[j]),
+                    radius <= big_m * (2 - selected[i] - selected[j]) + dij,
                     name=f"pair_spacing_{i}_{j}",
                 )
 

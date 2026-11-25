@@ -52,3 +52,13 @@ def test_gurobi_matches_exact_on_random_instances():
         )
         assert result.is_optimal
         assert result.radius == pytest.approx(exact.radius, rel=1e-7, abs=1e-8)
+
+def test_gurobi_model_size_matches_kuby():
+    """The Kuby model has n + 1 variables and n(n-1)/2 + 1 constraints."""
+    points = random_uniform_points(n=12, dim=2, seed=5)
+    result = solve_k_dispersion_gurobi(
+        points, 4, GurobiConfig(time_limit=20, mip_gap=0, threads=1)
+    )
+    assert result.num_vars == 12 + 1
+    assert result.num_constraints == 12 * 11 // 2 + 1
+    assert result.is_optimal
