@@ -34,6 +34,7 @@ for sub in ["", "oracle", "baselines", "binary_search"]:
         sys.path.append(p)
 
 from geometry.points import random_uniform_points, random_clustered_points
+import torch
 from dnn_core import TrainConfig
 from feasibility_oracle import OracleConfig
 from binary_search import SearchConfig, solve_k_dispersion
@@ -138,6 +139,7 @@ def run_instance(dist_name, n, k, seed, search_cfg, gurobi_cfg=None, use_exact=T
         # Run configuration.
         "cfg_target_mode": search_cfg.oracle_cfg.train_cfg.target_mode,
         "cfg_max_steps": search_cfg.oracle_cfg.train_cfg.max_steps,
+        "cfg_device": search_cfg.oracle_cfg.train_cfg.device,
         "cfg_restarts": search_cfg.oracle_cfg.max_restarts,
         "cfg_certify": int(search_cfg.oracle_cfg.use_certificate),
         "cfg_local_search": int(search_cfg.oracle_cfg.local_search),
@@ -259,6 +261,17 @@ def summarize(rows):
         print("  statuses            : " + ", ".join(f"{s}={c}" for s, c in sorted(statuses.items())))
 
 
+def resolve_device(requested: str) -> str:
+    """Return the torch device to use, falling back to cpu if CUDA is unavailable."""
+    if requested == "cpu":
+        return "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if requested == "cuda":
+        print("Warning: --device cuda requested but CUDA is not available; using cpu.")
+    return "cpu"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Run k-dispersion experiments and write a results CSV.")
     ap.add_argument("--ns", type=int, nargs="+", default=[12])
@@ -271,6 +284,9 @@ def main():
                          "the same point set is used for every k")
     ap.add_argument("--dists", nargs="+", default=["uniform"])
     ap.add_argument("--max-steps", type=int, default=400, help="ADAM steps per oracle attempt")
+    ap.add_argument("--device", choices=["cpu", "cuda", "auto"], default="cpu",
+                    help="device for the dNN: cpu (default), cuda, or auto (cuda if available); "
+                         "falls back to cpu if CUDA is not available")
     ap.add_argument("--restarts", type=int, default=15, help="max oracle restarts")
     ap.add_argument("--target-mode", choices=["k", "k2"], default="k",
                     help="k: loss f (Eq. 7), target -k/2; k2: loss h (Eq. 10), target -k^2/2")
@@ -303,9 +319,13 @@ def main():
             output_flag=0,
         )
 
+    device = resolve_device(args.device)
+    print(f"dNN device: {device}")
+
     search_cfg = SearchConfig(
         oracle_cfg=OracleConfig(
-            train_cfg=TrainConfig(target_mode=args.target_mode, max_steps=args.max_steps),
+            train_cfg=TrainConfig(target_mode=args.target_mode, max_steps=args.max_steps,
+                                  device=device),
             max_restarts=args.restarts,
             use_certificate=args.certify,
             local_search=not args.no_local_search,
